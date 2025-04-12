@@ -37,6 +37,7 @@
             <!-- Barra de herramientas con botones de acción -->
             <ToolBar Grid.Row="0" Background="#E0E0E0">
                 <Button x:Name="btnCopy" Content="Copiar" Margin="3" Padding="8,3" Click="btnCopy_Click" IsEnabled="False"/>
+                <Button x:Name="btnCopyText" Content="Copiar texto" Margin="3" Padding="8,3" Click="btnCopyText_Click" IsEnabled="False"/>
                 <Button x:Name="btnCut" Content="Cortar" Margin="3" Padding="8,3" Click="btnCut_Click" IsEnabled="False"/>
                 <Button x:Name="btnPaste" Content="Pegar" Margin="3" Padding="8,3" Click="btnPaste_Click" IsEnabled="False"/>
                 <Separator/>

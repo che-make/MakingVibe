@@ -231,9 +231,27 @@ public partial class MainWindow : Window
         string extension = Path.GetExtension(filePath).ToLower();
         return extension switch
         {
-            ".txt" or ".log" or ".xml" or ".json" or ".html" or ".htm" or ".css" or ".js" or 
-            ".cs" or ".xaml" or ".config" or ".ini" or ".bat" or ".cmd" or ".ps1" or 
-            ".sh" or ".md" or ".csv" or ".tsv" => true,
+            // Basic text files
+            ".txt" or ".log" or ".md" or ".csv" or ".tsv" => true,
+        
+            // Web development
+            ".html" or ".htm" or ".css" or ".js" or ".jsx" or ".ts" or ".tsx" or ".json" or ".xml" => true,
+        
+            // Configuration files
+            ".config" or ".ini" or ".yml" or ".yaml" or ".toml" or ".conf" or ".properties" => true,
+        
+            // Scripts and shell
+            ".bat" or ".cmd" or ".ps1" or ".sh" or ".bash" or ".zsh" or ".fish" => true,
+        
+            // Programming languages
+            ".cs" or ".xaml" or ".java" or ".py" or ".rb" or ".php" or ".c" or ".cpp" or ".h" or ".hpp" or 
+                ".go" or ".rs" or ".swift" or ".kt" or ".scala" or ".pl" or ".lua" or ".dart" or ".groovy" or
+                ".m" or ".r" or ".sql" or ".vb" => true,
+        
+            // Other common text formats
+            ".gitignore" or ".dockerignore" or ".env" or ".editorconfig" => true,
+        
+            // Default for unrecognized extensions
             _ => false
         };
     }
@@ -246,6 +264,9 @@ public partial class MainWindow : Window
         btnDelete.IsEnabled = hasSelection;
         btnRename.IsEnabled = selectedItems.Count == 1;
         btnPaste.IsEnabled = !string.IsNullOrEmpty(clipboardPath);
+        
+        // Enable the Copy Text button only if at least one text file is selected
+        btnCopyText.IsEnabled = hasSelection && selectedItems.Any(item => !item.IsDirectory && IsTextFile(item.Path));
     }
 
     private void btnCopy_Click(object sender, RoutedEventArgs e)
@@ -259,6 +280,200 @@ public partial class MainWindow : Window
         
         MessageBox.Show($"Se {(selectedItems.Count == 1 ? "ha copiado 1 elemento" : $"han copiado {selectedItems.Count} elementos")} al portapapeles", 
             "Copiar", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+    private bool BuildMinimalFileMap(string currentDir, Dictionary<string, List<string>> dirToFilesMap, 
+    int level, System.Text.StringBuilder builder)
+{
+    // Skip directories not in our path to any selected file
+    bool hasSelectedFileInSubtree = dirToFilesMap.ContainsKey(currentDir);
+    
+    // Check if any subdirectories contain selected files
+    var subdirs = Directory.GetDirectories(currentDir);
+    var relevantSubdirs = new List<string>();
+    
+    foreach (var subdir in subdirs)
+    {
+        if (BuildMinimalFileMap(subdir, dirToFilesMap, level + 1, new System.Text.StringBuilder()))
+        {
+            relevantSubdirs.Add(subdir);
+            hasSelectedFileInSubtree = true;
+        }
+    }
+    
+    // If this directory doesn't contain any selected files directly or in subdirectories, skip it
+    if (!hasSelectedFileInSubtree)
+        return false;
+    
+    // This directory is relevant, so add it to the map
+    string indent = new string(' ', level * 2);
+    string dirName;
+    
+    if (level == 0)
+    {
+        // Root directory - use the full path
+        dirName = currentDir;
+        builder.Append($"{indent}{dirName}");
+    }
+    else
+    {
+        // Subdirectory - use just the folder name
+        dirName = Path.GetFileName(currentDir);
+        builder.Append($"{indent}└── {dirName}");
+    }
+    
+    // Only add newline if we have files or subdirs
+    bool hasContent = (dirToFilesMap.ContainsKey(currentDir) && dirToFilesMap[currentDir].Count > 0) || 
+                      relevantSubdirs.Count > 0;
+    
+    if (hasContent)
+    {
+        builder.AppendLine();
+    }
+    
+    // Add subdirectories recursively
+    foreach (var subdir in relevantSubdirs)
+    {
+        BuildMinimalFileMap(subdir, dirToFilesMap, level + 1, builder);
+    }
+    
+    // Add selected files in this directory
+    if (dirToFilesMap.ContainsKey(currentDir))
+    {
+        foreach (var file in dirToFilesMap[currentDir].OrderBy(f => f))
+        {
+            builder.AppendLine($"{indent}  ├── {file}");
+        }
+    }
+    
+    return true;
+}
+
+    private void btnCopyText_Click(object sender, RoutedEventArgs e)
+{
+    if (selectedItems.Count == 0 || !selectedItems.Any(item => !item.IsDirectory && IsTextFile(item.Path)))
+    {
+        MessageBox.Show("Seleccione al menos un archivo de texto para copiar su contenido.", 
+            "Copiar texto", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return;
+    }
+    
+    try
+    {
+        var fileMapBuilder = new System.Text.StringBuilder();
+        var fileContentBuilder = new System.Text.StringBuilder();
+        
+        // Get only the text files from selection
+        var selectedTextFiles = selectedItems
+            .Where(i => !i.IsDirectory && IsTextFile(i.Path))
+            .ToList();
+        
+        // Generate file map header with only selected files
+        fileMapBuilder.AppendLine("<file_map>");
+        
+        // Build directory tree of only the selected files
+        Dictionary<string, List<string>> dirToFilesMap = new();
+        
+        // Group files by directory
+        foreach (var item in selectedTextFiles)
+        {
+            string dirPath = Path.GetDirectoryName(item.Path);
+            string fileName = Path.GetFileName(item.Path);
+            
+            if (!dirToFilesMap.ContainsKey(dirPath))
+                dirToFilesMap[dirPath] = new List<string>();
+                
+            dirToFilesMap[dirPath].Add(fileName);
+        }
+        
+        // Build tree structure starting from root
+        BuildMinimalFileMap(rootPath, dirToFilesMap, 0, fileMapBuilder);
+        
+        fileMapBuilder.AppendLine("</file_map>");
+        
+        // Generate file contents
+        fileContentBuilder.AppendLine("<file_contents>");
+        
+        foreach (var item in selectedTextFiles)
+        {
+            try
+            {
+                string content = File.ReadAllText(item.Path);
+                string relativePath = item.Path.Replace(rootPath, "").TrimStart('\\', '/');
+                
+                fileContentBuilder.AppendLine($"File: {relativePath}");
+                fileContentBuilder.AppendLine($"");
+                fileContentBuilder.AppendLine(content);
+                fileContentBuilder.AppendLine($"");
+                fileContentBuilder.AppendLine();
+            }
+            catch (Exception ex)
+            {
+                fileContentBuilder.AppendLine($"Error reading file {item.Path}: {ex.Message}");
+            }
+        }
+        
+        fileContentBuilder.AppendLine("</file_contents>");
+        
+        // Combine both sections
+        var result = fileMapBuilder.ToString() + Environment.NewLine + fileContentBuilder.ToString();
+        
+        // Copy to clipboard
+        System.Windows.Clipboard.SetText(result);
+        
+        int fileCount = selectedTextFiles.Count;
+        MessageBox.Show($"Se ha copiado el contenido de {fileCount} archivo(s) al portapapeles.", 
+            "Copiar texto", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Error al copiar el texto: {ex.Message}", 
+            "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+}
+
+    private void BuildFileMapStructure(string directory, int level, System.Text.StringBuilder builder)
+    {
+        string indent = new string(' ', level * 2);
+        string dirName = Path.GetFileName(directory);
+        
+        if (string.IsNullOrEmpty(dirName) && level == 0)
+        {
+            // Root directory
+            builder.Append($"{indent}{directory}");
+        }
+        else
+        {
+            builder.Append($"{indent}└── {dirName}");
+        }
+        
+        try
+        {
+            var dirs = Directory.GetDirectories(directory);
+            var files = Directory.GetFiles(directory);
+            
+            if (dirs.Length > 0 || files.Length > 0)
+            {
+                builder.AppendLine();
+            }
+            
+            // Add directories
+            foreach (var dir in dirs.OrderBy(d => d))
+            {
+                BuildFileMapStructure(dir, level + 1, builder);
+            }
+            
+            // Add files
+            foreach (var file in files.OrderBy(f => f))
+            {
+                string fileName = Path.GetFileName(file);
+                builder.AppendLine($"{indent}  ├── {fileName}");
+            }
+        }
+        catch (Exception)
+        {
+            // If we can't access the directory, just write a placeholder
+            builder.AppendLine(" [acceso denegado]");
+        }
     }
 
     private void btnCut_Click(object sender, RoutedEventArgs e)
