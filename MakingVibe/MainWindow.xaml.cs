@@ -125,7 +125,7 @@ namespace MakingVibe
             {
                  initialDir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             }
-            if (!string.IsNullOrEmpty(initialDir)) // Check if MyDocuments exists
+            if (!string.IsNullOrEmpty(initialDir) && _fileSystemService.DirectoryExists(initialDir)) // Check if initialDir exists before setting
             {
                  dialog.SelectedPath = initialDir; // Use SelectedPath for initial selection
             }
@@ -294,16 +294,24 @@ namespace MakingVibe
         private void RefreshNodeUI(TreeViewItem nodeToRefresh, FileSystemItem fsi)
         {
             bool wasExpanded = nodeToRefresh.IsExpanded;
-            nodeToRefresh.Items.Clear(); // Clear existing UI children
+            string? parentPath = _fileSystemService.GetDirectoryName(fsi.Path); // Get parent path before clearing
 
             // Clear potentially outdated entries from the map for children of this node
-            var keysToRemove = pathToTreeViewItemMap.Keys
+            // Important: Do this *before* clearing items to avoid issues if children are selected
+            var childPathsToRemove = pathToTreeViewItemMap.Keys
                                 .Where(k => k.StartsWith(fsi.Path + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                                 .ToList();
-            foreach (var key in keysToRemove)
+            foreach (var key in childPathsToRemove)
             {
-                pathToTreeViewItemMap.Remove(key);
+                // Also remove from selection if a child being removed was selected
+                if(pathToTreeViewItemMap.TryGetValue(key, out var childTvi) && childTvi.Tag is FileSystemItem childFsi)
+                {
+                    selectedItems.Remove(childFsi); // Remove from backing collection
+                }
+                pathToTreeViewItemMap.Remove(key); // Remove from map
             }
+
+            nodeToRefresh.Items.Clear(); // Clear existing UI children
 
             // Reload children UI
             LoadChildrenUI(nodeToRefresh, fsi.Path);
@@ -326,7 +334,7 @@ namespace MakingVibe
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 5, 0),
                 Tag = fsi, // Tag the checkbox with the data item
-                IsChecked = selectedItems.Contains(fsi) // Sync check state
+                IsChecked = selectedItems.Contains(fsi) // Sync check state with backing collection
             };
             checkbox.Checked += Checkbox_Checked;
             checkbox.Unchecked += Checkbox_Unchecked;
@@ -373,10 +381,20 @@ namespace MakingVibe
         {
             if (sender is CheckBox { Tag: FileSystemItem fsi } checkbox)
             {
+                // Add the clicked item (file or dir) if not already present
                 if (!selectedItems.Contains(fsi))
                 {
                     selectedItems.Add(fsi); // Triggers CollectionChanged -> UpdateStatusBarAndButtonStates
                 }
+
+                // --- NEW ---
+                // If a directory was checked, check its direct child files
+                if (fsi.IsDirectory)
+                {
+                    // Use a helper method to handle child selection logic
+                    UpdateDirectoryFilesSelection(fsi, true);
+                }
+                // -----------
             }
         }
 
@@ -384,9 +402,86 @@ namespace MakingVibe
         {
             if (sender is CheckBox { Tag: FileSystemItem fsi } checkbox)
             {
+                // Remove the clicked item (file or dir) *before* potentially unchecking children
                 selectedItems.Remove(fsi); // Triggers CollectionChanged -> UpdateStatusBarAndButtonStates
+
+                // --- NEW ---
+                // If a directory was unchecked, uncheck its direct child files
+                if (fsi.IsDirectory)
+                {
+                     // Use a helper method to handle child deselection logic
+                    UpdateDirectoryFilesSelection(fsi, false);
+                }
+                 // -----------
             }
         }
+
+        // --- NEW HELPER METHOD ---
+        /// <summary>
+        /// Updates the selection state (both in the collection and UI) for direct child files of a directory.
+        /// </summary>
+        /// <param name="directoryFsi">The FileSystemItem representing the directory.</param>
+        /// <param name="select">True to select files, False to deselect files.</param>
+        private void UpdateDirectoryFilesSelection(FileSystemItem directoryFsi, bool select)
+        {
+            // Get direct children using the service
+            var children = _fileSystemService.GetDirectoryChildren(directoryFsi.Path);
+            if (children == null)
+            {
+                Debug.WriteLine($"UpdateDirectoryFilesSelection: Could not get children for {directoryFsi.Path} (access denied?).");
+                return; // Handle access denied or other errors
+            }
+
+            // Disable CollectionChanged notifications temporarily for bulk updates?
+            // Not strictly necessary with ObservableCollection, but could be an optimization if needed.
+
+            foreach (var child in children)
+            {
+                // Only process direct child *files*
+                if (!child.IsDirectory)
+                {
+                    // Update the backing collection
+                    if (select)
+                    {
+                        // Add to selection if not already there
+                        if (!selectedItems.Contains(child))
+                        {
+                            selectedItems.Add(child);
+                        }
+                    }
+                    else
+                    {
+                        // Remove from selection (regardless of whether it was selected individually before)
+                        selectedItems.Remove(child);
+                    }
+
+                    // Update the corresponding UI CheckBox state
+                    if (pathToTreeViewItemMap.TryGetValue(child.Path, out var childTreeViewItem))
+                    {
+                        if (childTreeViewItem.Header is StackPanel sp && sp.Children.Count > 0 && sp.Children[0] is CheckBox cb)
+                        {
+                            // Set the checkbox state directly to avoid potential infinite loops
+                            // if changing IsChecked programmatically triggers the event again.
+                            // We only change it if it's not already in the desired state.
+                            if (cb.IsChecked != select)
+                            {
+                                cb.IsChecked = select;
+                            }
+                        }
+                        else {
+                             Debug.WriteLine($"UpdateDirectoryFilesSelection: Could not find CheckBox for child {child.Path}.");
+                        }
+                    }
+                    else {
+                         Debug.WriteLine($"UpdateDirectoryFilesSelection: TreeViewItem not found in map for child {child.Path}.");
+                    }
+                }
+            }
+
+            // Re-enable notifications if they were disabled
+        }
+        // --- END NEW HELPER METHOD ---
+
 
         /// <summary>
         /// Clears the selection collection and unchecks corresponding checkboxes in the UI.
@@ -394,17 +489,23 @@ namespace MakingVibe
         private void ClearAllSelectionsUI()
         {
             // Create a copy to avoid issues while modifying the collection being iterated indirectly
-            var itemsToUncheck = selectedItems.ToList();
-            selectedItems.Clear(); // Clear the backing collection (triggers update)
+            var itemsToUncheckPaths = selectedItems.Select(i => i.Path).ToList();
 
-            // Uncheck the corresponding checkboxes in the UI
-            foreach (var item in itemsToUncheck)
+            // Clear the backing collection first. This triggers one CollectionChanged event.
+            selectedItems.Clear();
+
+            // Now iterate through the paths and uncheck the corresponding UI checkboxes
+            foreach (var path in itemsToUncheckPaths)
             {
-                if (pathToTreeViewItemMap.TryGetValue(item.Path, out var treeViewItem))
+                if (pathToTreeViewItemMap.TryGetValue(path, out var treeViewItem))
                 {
                     if (treeViewItem.Header is StackPanel sp && sp.Children.Count > 0 && sp.Children[0] is CheckBox cb)
                     {
-                        cb.IsChecked = false; // Directly uncheck UI element
+                        // Directly uncheck UI element if it's still checked
+                        if (cb.IsChecked == true)
+                        {
+                             cb.IsChecked = false;
+                        }
                     }
                 }
             }
@@ -419,6 +520,12 @@ namespace MakingVibe
         /// </summary>
         private async Task ShowPreviewAsync(FileSystemItem fsi)
         {
+            if (fsi == null) // Add null check
+            {
+                 txtFileContent.Text = string.Empty;
+                 return;
+            }
+
             if (fsi.IsDirectory)
             {
                 txtFileContent.Text = $"Directorio seleccionado: {fsi.Name}\n\nRuta: {fsi.Path}";
@@ -468,7 +575,6 @@ namespace MakingVibe
             // Update button states based on selection and clipboard
             bool hasSelection = selectedItems.Count > 0;
             bool hasSingleSelection = selectedItems.Count == 1;
-            bool isDirectorySelected = (treeViewFiles.SelectedItem as TreeViewItem)?.Tag is FileSystemItem fsi && fsi.IsDirectory;
             bool canPaste = clipboardItems.Count > 0 && treeViewFiles.SelectedItem != null; // Simplified: Can paste if *any* item is selected as target parent
 
 
@@ -530,6 +636,7 @@ namespace MakingVibe
                 if (result == null)
                 {
                     MessageBox.Show("No se encontraron archivos de texto válidos en la selección.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
+                    UpdateStatusBarAndButtonStates("No se encontraron archivos de texto."); // Update status
                     return; // Exit early
                 }
 
@@ -603,6 +710,7 @@ namespace MakingVibe
             this.Cursor = Cursors.Wait;
             bool refreshNeeded = false;
             string? refreshParentPath = null; // Track the parent where paste occurred
+            string? sourceRefreshParentPath = null; // Track parent for refresh on Move
 
             try
             {
@@ -614,6 +722,7 @@ namespace MakingVibe
                     string sourcePath = itemToPaste.Path;
                     string targetName = _fileSystemService.GetFileName(sourcePath);
                     string fullTargetPath = _fileSystemService.CombinePath(destinationDir, targetName);
+                    string? sourceParent = isCutOperation ? _fileSystemService.GetDirectoryName(sourcePath) : null;
 
                     // Basic checks
                     if (string.Equals(sourcePath, fullTargetPath, StringComparison.OrdinalIgnoreCase)) continue; // Pasting onto itself
@@ -639,6 +748,8 @@ namespace MakingVibe
                         {
                             var targetToDeleteFsi = new FileSystemItem { Name = targetName, Path = fullTargetPath, Type = "", IsDirectory = itemToPaste.IsDirectory };
                             _fileSystemService.DeleteItem(targetToDeleteFsi);
+                            // Remove existing item from map if it existed
+                             pathToTreeViewItemMap.Remove(fullTargetPath);
                         }
                         catch (Exception delEx)
                         {
@@ -652,6 +763,9 @@ namespace MakingVibe
                         if (isCutOperation)
                         {
                              _fileSystemService.MoveItem(sourcePath, fullTargetPath, itemToPaste.IsDirectory);
+                             // Remove old item from map
+                             pathToTreeViewItemMap.Remove(sourcePath);
+                             if(sourceParent != null) sourceRefreshParentPath = sourceParent; // Mark source parent for refresh
                         }
                         else
                         {
@@ -679,15 +793,22 @@ namespace MakingVibe
                 }
 
                 // Refresh UI if changes were made
-                if (refreshNeeded && refreshParentPath != null)
+                if (refreshNeeded && !string.IsNullOrEmpty(rootPath))
                 {
-                    if (pathToTreeViewItemMap.TryGetValue(refreshParentPath, out var parentNode))
-                    {
-                        RefreshNodeUI(parentNode, (FileSystemItem)parentNode.Tag); // Refresh the parent node
-                    }
-                    else {
-                         LoadDirectoryTreeUI(rootPath!); // Fallback to full refresh
-                    }
+                    // Refresh source parent first if it was a move
+                     if (sourceRefreshParentPath != null && pathToTreeViewItemMap.TryGetValue(sourceRefreshParentPath, out var sourceParentNode))
+                     {
+                          RefreshNodeUI(sourceParentNode, (FileSystemItem)sourceParentNode.Tag);
+                     }
+
+                    // Refresh destination parent
+                     if (refreshParentPath != null && pathToTreeViewItemMap.TryGetValue(refreshParentPath, out var parentNode))
+                     {
+                         RefreshNodeUI(parentNode, (FileSystemItem)parentNode.Tag); // Refresh the parent node
+                     }
+                     else {
+                         LoadDirectoryTreeUI(rootPath); // Fallback to full refresh if target parent not found
+                     }
                 }
 
                  UpdateStatusBarAndButtonStates($"{pasteCount} elemento(s) pegado(s) en '{_fileSystemService.GetFileName(destinationDir)}'.");
@@ -725,18 +846,23 @@ namespace MakingVibe
 
                 try
                 {
-                    foreach (var item in itemsToDelete)
+                    // Clear selection first before deletion to avoid issues with events/binding
+                    var pathsToDelete = itemsToDelete.Select(i => i.Path).ToList();
+                    ClearAllSelectionsUI(); // Unchecks UI and clears selectedItems
+
+
+                    foreach (var itemPath in pathsToDelete)
                     {
+                        // Find the FSI again (safer in case collection changed)
+                        var item = itemsToDelete.FirstOrDefault(i => i.Path.Equals(itemPath, StringComparison.OrdinalIgnoreCase));
+                        if(item == null) continue; // Should not happen if logic is correct
+
                         try
                         {
                             string? parentPath = _fileSystemService.GetDirectoryName(item.Path);
                             _fileSystemService.DeleteItem(item); // Use service
 
-                            // Remove from selection *after* successful deletion
-                            // Note: Removing from selectedItems automatically triggers status update
-                            selectedItems.Remove(item);
-
-                            // Remove from map
+                             // Remove from map
                              pathToTreeViewItemMap.Remove(item.Path); // Remove the item itself
 
                             // Mark parent for refresh
@@ -748,22 +874,26 @@ namespace MakingVibe
                         {
                             MessageBox.Show($"No se pudo eliminar '{item.Name}'.\nError: {itemEx.Message}\n\nAsegúrese de que no esté en uso.", "Error al Eliminar", MessageBoxButton.OK, MessageBoxImage.Error);
                             // Decide whether to continue or break
+                             if (parentPathsToRefresh.Any()) break; // If some already deleted, try to refresh before breaking
                         }
                     }
 
                     // Refresh parent nodes in the UI
-                    if(parentPathsToRefresh.Any())
+                    if(parentPathsToRefresh.Any() && !string.IsNullOrEmpty(rootPath))
                     {
+                        bool refreshedOk = false;
                         foreach(var parentPath in parentPathsToRefresh)
                         {
                             if (pathToTreeViewItemMap.TryGetValue(parentPath, out var parentNode))
                             {
                                 RefreshNodeUI(parentNode, (FileSystemItem)parentNode.Tag);
-                            } else if(string.Equals(parentPath, rootPath, StringComparison.OrdinalIgnoreCase)) {
-                                // If parent was root and root node wasn't found (edge case), refresh all
-                                if(!string.IsNullOrEmpty(rootPath)) LoadDirectoryTreeUI(rootPath);
+                                refreshedOk = true;
                             }
                         }
+                         if (!refreshedOk) {
+                             // If parents weren't found (maybe root was parent), refresh all
+                             LoadDirectoryTreeUI(rootPath);
+                         }
                     }
                     else if (deleteCount > 0 && !string.IsNullOrEmpty(rootPath)) {
                          // Fallback refresh if parents weren't found but items were deleted
@@ -782,7 +912,7 @@ namespace MakingVibe
                 finally
                 {
                     this.Cursor = Cursors.Arrow;
-                    // UpdateStatusBarAndButtonStates(); // Status update already happens via selectedItems.Remove
+                    UpdateStatusBarAndButtonStates(); // Update buttons etc.
                 }
             }
         }
@@ -824,26 +954,43 @@ namespace MakingVibe
 
                 try
                 {
+                     // --- Update Data Model First (before filesystem operation) ---
+                     // 1. Remove the old item from the map
+                     pathToTreeViewItemMap.Remove(oldPath);
+                     // 2. Update the FileSystemItem in the selectedItems collection (if it's still there)
+                     //    It's tricky because ObservableCollection doesn't easily support replacing an item based on predicate.
+                     //    Safer approach: remove old, add new conceptual item (refresh will handle UI)
+                     string oldNameForStatus = itemToRename.Name;
+                     selectedItems.Remove(itemToRename); // Remove old from selection
+
+
                     // Perform rename using the service
                     _fileSystemService.RenameItem(oldPath, newPath, itemToRename.IsDirectory);
 
-                    // Update the FileSystemItem in memory (important!)
-                    string oldName = itemToRename.Name; // Store old name for status message
-                    itemToRename.Name = newName;
-                    itemToRename.Path = newPath;
+                     // 3. Create a conceptual 'new' FSI (even though the object might be reused after refresh)
+                     // This isn't strictly needed as RefreshNodeUI will recreate everything,
+                     // but helps conceptual clarity.
+                     // var newItem = new FileSystemItem { Name = newName, Path = newPath, Type = itemToRename.Type, IsDirectory = itemToRename.IsDirectory };
 
 
                     // Refresh the parent node in the tree view UI
                      if (pathToTreeViewItemMap.TryGetValue(directory, out var parentNode))
                      {
-                         // Refresh the parent node which will re-create the child item UI
+                         // Refresh the parent node which will re-create the child item UI and update map
                          RefreshNodeUI(parentNode, (FileSystemItem)parentNode.Tag);
 
                          // Optionally try to re-select the renamed item visually
-                          Dispatcher.InvokeAsync(() => { // Ensure UI update happens after refresh
+                         // We need to run this *after* the refresh potentially completes UI updates.
+                         Dispatcher.InvokeAsync(() => {
                              if(pathToTreeViewItemMap.TryGetValue(newPath, out var newTvi))
                              {
+                                 // Re-select the corresponding TreeViewItem if found
                                  newTvi.IsSelected = true;
+                                 // Also re-add the (potentially new) FSI to the selectedItems collection
+                                 if (newTvi.Tag is FileSystemItem newFsi && !selectedItems.Contains(newFsi))
+                                 {
+                                     selectedItems.Add(newFsi);
+                                 }
                              }
                          }, System.Windows.Threading.DispatcherPriority.Background);
 
@@ -853,13 +1000,7 @@ namespace MakingVibe
                           if(!string.IsNullOrEmpty(rootPath)) LoadDirectoryTreeUI(rootPath); // Fallback refresh
                      }
 
-                    // Update the main path-to-item map (remove old, new one added during refresh)
-                    pathToTreeViewItemMap.Remove(oldPath);
-
-
-                    UpdateStatusBarAndButtonStates($"'{oldName}' renombrado a '{newName}'.");
-                    // No need for success message box? Status bar is enough.
-                    // MessageBox.Show("Elemento renombrado con éxito.", "Renombrar", MessageBoxButton.OK, MessageBoxImage.Information);
+                    UpdateStatusBarAndButtonStates($"'{oldNameForStatus}' renombrado a '{newName}'.");
                 }
                 catch (Exception ex)
                 {
@@ -876,7 +1017,8 @@ namespace MakingVibe
                 finally
                 {
                     this.Cursor = Cursors.Arrow;
-                    UpdateStatusBarAndButtonStates(); // Update buttons etc.
+                    // Status bar is already updated, but ensure button states are correct
+                    UpdateStatusBarAndButtonStates();
                 }
             }
         }
