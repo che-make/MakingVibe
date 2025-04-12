@@ -5,76 +5,139 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:MakingVibe"
         mc:Ignorable="d"
-        Title="Explorador de Archivos" Height="600" Width="900">
+        Height="650" Width="950"
+        Icon="makingvibe.ico"
+        Loaded="Window_Loaded"> <!-- Add Loaded event -->
+
+    <!-- Add Keyboard Shortcuts -->
+    <Window.InputBindings>
+        <KeyBinding Key="F5" Command="{Binding RefreshCommand}" />
+        <KeyBinding Key="Delete" Command="{Binding DeleteCommand}" />
+        <!-- Add more bindings for Copy, Cut, Paste, Rename if desired -->
+    </Window.InputBindings>
+
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" /> <!-- Row for Status Bar -->
+        </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="300" />
+            <ColumnDefinition Width="350" /> <!-- Increased width for tree view -->
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
-        
+
         <!-- Aside - Panel lateral con árbol de directorios -->
-        <Grid Grid.Column="0" Background="#F0F0F0">
+        <Grid Grid.Row="0" Grid.Column="0" Background="#F0F0F0">
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" /> <!-- Row for Clear Selection Button -->
             </Grid.RowDefinitions>
-            
+
             <StackPanel Grid.Row="0" Margin="10">
-                <TextBlock Text="Explorador de Archivos" FontWeight="Bold" FontSize="16" Margin="0,0,0,10"/>
-                <Button x:Name="btnSelectRoot" Content="Seleccionar Carpeta Raíz" Margin="0,5" Padding="5" Click="btnSelectRoot_Click"/>
+                <TextBlock Text="Explorador de Archivos" FontWeight="Bold" FontSize="16" Margin="0,0,0,10" />
+                <Button x:Name="btnSelectRoot" Content="Seleccionar Carpeta Raíz" Margin="0,5" Padding="5"
+                        Click="btnSelectRoot_Click" ToolTip="Seleccionar la carpeta base del proyecto"/>
             </StackPanel>
-            
-            <TreeView x:Name="treeViewFiles" Grid.Row="1" Margin="10" BorderThickness="1" BorderBrush="#CCCCCC"/>
+
+            <!-- TreeView with Context Menu -->
+            <TreeView x:Name="treeViewFiles" Grid.Row="1" Margin="10,0,10,10" BorderThickness="1" BorderBrush="#CCCCCC"
+                      SelectedItemChanged="treeViewFiles_SelectedItemChanged"> <!-- Use SelectedItemChanged for preview -->
+                <TreeView.ContextMenu>
+                    <ContextMenu x:Name="treeViewContextMenu" StaysOpen="true" ContextMenuOpening="TreeViewContextMenu_ContextMenuOpening">
+                         <MenuItem Header="Copiar Texto (AI)" x:Name="ctxCopyText" Click="btnCopyText_Click"/>
+                         <MenuItem Header="Renombrar" x:Name="ctxRename" Click="btnRename_Click"/>
+                         <MenuItem Header="Eliminar" x:Name="ctxDelete" Click="btnDelete_Click"/>
+                         <Separator/>
+                         <MenuItem Header="Refrescar Nodo" x:Name="ctxRefreshNode" Click="CtxRefreshNode_Click"/>
+                         <MenuItem Header="Refrescar Todo (F5)" x:Name="ctxRefreshAll" Click="btnRefresh_Click"/>
+                    </ContextMenu>
+                </TreeView.ContextMenu>
+                <!-- Style to increase spacing -->
+                <TreeView.ItemContainerStyle>
+                    <Style TargetType="{x:Type TreeViewItem}">
+                        <Setter Property="Padding" Value="2"/>
+                        <Setter Property="Margin" Value="0,1"/>
+                    </Style>
+                </TreeView.ItemContainerStyle>
+            </TreeView>
+
+             <!-- Clear Selection Button -->
+            <Button x:Name="btnClearSelection" Grid.Row="2" Content="Limpiar Selección" Margin="10,0,10,10" Padding="5"
+                    Click="btnClearSelection_Click" IsEnabled="{Binding ElementName=treeViewFiles, Path=HasItems}"/>
+
         </Grid>
-        
+
         <!-- Main - Panel principal para mostrar contenido y acciones -->
-        <Grid Grid.Column="1">
+        <Grid Grid.Row="0" Grid.Column="1">
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
             </Grid.RowDefinitions>
-            
+
             <!-- Barra de herramientas con botones de acción -->
             <ToolBar Grid.Row="0" Background="#E0E0E0">
-                <Button x:Name="btnCopy" Content="Copiar" Margin="3" Padding="8,3" Click="btnCopy_Click" IsEnabled="False"/>
-                <Button x:Name="btnCopyText" Content="Copiar texto" Margin="3" Padding="8,3" Click="btnCopyText_Click" IsEnabled="False"/>
-                <Button x:Name="btnCut" Content="Cortar" Margin="3" Padding="8,3" Click="btnCut_Click" IsEnabled="False"/>
-                <Button x:Name="btnPaste" Content="Pegar" Margin="3" Padding="8,3" Click="btnPaste_Click" IsEnabled="False"/>
-                <Separator/>
-                <Button x:Name="btnDelete" Content="Eliminar" Margin="3" Padding="8,3" Click="btnDelete_Click" IsEnabled="False"/>
-                <Button x:Name="btnRename" Content="Renombrar" Margin="3" Padding="8,3" Click="btnRename_Click" IsEnabled="False"/>
-                <Separator/>
-                <Button x:Name="btnRefresh" Content="Refrescar" Margin="3" Padding="8,3" Click="btnRefresh_Click"/>
+                <!-- Changed Copy Text icon/position -->
+                <Button x:Name="btnCopyText" Content="Copiar Texto (AI)" Margin="3" Padding="8,3" Click="btnCopyText_Click"
+                        IsEnabled="False" FontWeight="Bold" ToolTip="Copia el mapa de archivos y el contenido de los archivos de texto seleccionados al portapapeles en formato AI."/>
+                <Separator />
+                <Button x:Name="btnCopy" Content="Copiar" Margin="3" Padding="8,3" Click="btnCopy_Click"
+                        IsEnabled="False" ToolTip="Copiar archivos/carpetas seleccionados (Ctrl+C)" />
+                <Button x:Name="btnCut" Content="Cortar" Margin="3" Padding="8,3" Click="btnCut_Click"
+                        IsEnabled="False" ToolTip="Cortar archivos/carpetas seleccionados (Ctrl+X)"/>
+                <Button x:Name="btnPaste" Content="Pegar" Margin="3" Padding="8,3" Click="btnPaste_Click"
+                        IsEnabled="False" ToolTip="Pegar archivos/carpetas desde el portapapeles (Ctrl+V)"/>
+                <Separator />
+                <Button x:Name="btnDelete" Content="Eliminar" Margin="3" Padding="8,3" Click="btnDelete_Click"
+                        IsEnabled="False" ToolTip="Eliminar archivos/carpetas seleccionados (Supr)"/>
+                <Button x:Name="btnRename" Content="Renombrar" Margin="3" Padding="8,3" Click="btnRename_Click"
+                        IsEnabled="False" ToolTip="Renombrar el archivo/carpeta seleccionado (F2)"/>
+                <Separator />
+                <Button x:Name="btnRefresh" Content="Refrescar Todo" Margin="3" Padding="8,3" Click="btnRefresh_Click" ToolTip="Recargar el árbol de directorios completo (F5)"/>
             </ToolBar>
-            
+
             <!-- Panel principal para mostrar contenido -->
             <Grid Grid.Row="1" Margin="10">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                
-                <TextBlock Grid.Row="0" x:Name="txtCurrentPath" Text="Ruta actual: " FontWeight="SemiBold" Margin="0,0,0,10"/>
-                
+
+                <TextBlock Grid.Row="0" x:Name="txtCurrentPath" Text="Ruta actual: (Seleccione una carpeta raíz)" FontWeight="SemiBold"
+                           Margin="0,0,0,10" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, ElementName=txtCurrentPath}"/>
+
                 <TabControl Grid.Row="1" x:Name="tabControlMain">
                     <TabItem Header="Vista Previa">
-                        <TextBox x:Name="txtFileContent" IsReadOnly="True" AcceptsReturn="True" 
+                        <TextBox x:Name="txtFileContent" IsReadOnly="True" AcceptsReturn="True"
                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                 FontFamily="Consolas" />
+                                 FontFamily="Consolas" FontSize="12" BorderBrush="#CCCCCC" BorderThickness="1"/>
                     </TabItem>
+                    <!-- Keep selected items tab for potential future use, but hide for now -->
+                    <!--
                     <TabItem Header="Seleccionados">
-                        <ListView x:Name="listViewSelected">
+                        <ListView x:Name="listViewSelected" ItemsSource="{Binding SelectedItems}">
                             <ListView.View>
                                 <GridView>
-                                    <GridViewColumn Header="Nombre" Width="200" DisplayMemberBinding="{Binding Name}"/>
-                                    <GridViewColumn Header="Ruta" Width="300" DisplayMemberBinding="{Binding Path}"/>
-                                    <GridViewColumn Header="Tipo" Width="100" DisplayMemberBinding="{Binding Type}"/>
+                                    <GridViewColumn Header="Nombre" Width="200" DisplayMemberBinding="{Binding Name}" />
+                                    <GridViewColumn Header="Ruta" Width="300" DisplayMemberBinding="{Binding Path}" />
+                                    <GridViewColumn Header="Tipo" Width="100" DisplayMemberBinding="{Binding Type}" />
                                 </GridView>
                             </ListView.View>
                         </ListView>
                     </TabItem>
+                    -->
                 </TabControl>
             </Grid>
         </Grid>
+
+         <!-- Status Bar -->
+        <StatusBar Grid.Row="1" Grid.ColumnSpan="2" Background="#E0E0E0">
+            <StatusBarItem>
+                <TextBlock x:Name="statusBarText" Text="Listo." />
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <TextBlock x:Name="statusSelectionCount" Text="Seleccionados: 0" Margin="0,0,10,0" />
+             </StatusBarItem>
+        </StatusBar>
     </Grid>
 </Window>
