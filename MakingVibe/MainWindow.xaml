@@ -5,8 +5,75 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:MakingVibe"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
+        Title="Explorador de Archivos" Height="600" Width="900">
     <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="300" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
         
+        <!-- Aside - Panel lateral con árbol de directorios -->
+        <Grid Grid.Column="0" Background="#F0F0F0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            
+            <StackPanel Grid.Row="0" Margin="10">
+                <TextBlock Text="Explorador de Archivos" FontWeight="Bold" FontSize="16" Margin="0,0,0,10"/>
+                <Button x:Name="btnSelectRoot" Content="Seleccionar Carpeta Raíz" Margin="0,5" Padding="5" Click="btnSelectRoot_Click"/>
+            </StackPanel>
+            
+            <TreeView x:Name="treeViewFiles" Grid.Row="1" Margin="10" BorderThickness="1" BorderBrush="#CCCCCC"/>
+        </Grid>
+        
+        <!-- Main - Panel principal para mostrar contenido y acciones -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            
+            <!-- Barra de herramientas con botones de acción -->
+            <ToolBar Grid.Row="0" Background="#E0E0E0">
+                <Button x:Name="btnCopy" Content="Copiar" Margin="3" Padding="8,3" Click="btnCopy_Click" IsEnabled="False"/>
+                <Button x:Name="btnCut" Content="Cortar" Margin="3" Padding="8,3" Click="btnCut_Click" IsEnabled="False"/>
+                <Button x:Name="btnPaste" Content="Pegar" Margin="3" Padding="8,3" Click="btnPaste_Click" IsEnabled="False"/>
+                <Separator/>
+                <Button x:Name="btnDelete" Content="Eliminar" Margin="3" Padding="8,3" Click="btnDelete_Click" IsEnabled="False"/>
+                <Button x:Name="btnRename" Content="Renombrar" Margin="3" Padding="8,3" Click="btnRename_Click" IsEnabled="False"/>
+                <Separator/>
+                <Button x:Name="btnRefresh" Content="Refrescar" Margin="3" Padding="8,3" Click="btnRefresh_Click"/>
+            </ToolBar>
+            
+            <!-- Panel principal para mostrar contenido -->
+            <Grid Grid.Row="1" Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <TextBlock Grid.Row="0" x:Name="txtCurrentPath" Text="Ruta actual: " FontWeight="SemiBold" Margin="0,0,0,10"/>
+                
+                <TabControl Grid.Row="1" x:Name="tabControlMain">
+                    <TabItem Header="Vista Previa">
+                        <TextBox x:Name="txtFileContent" IsReadOnly="True" AcceptsReturn="True" 
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                 FontFamily="Consolas" />
+                    </TabItem>
+                    <TabItem Header="Seleccionados">
+                        <ListView x:Name="listViewSelected">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Nombre" Width="200" DisplayMemberBinding="{Binding Name}"/>
+                                    <GridViewColumn Header="Ruta" Width="300" DisplayMemberBinding="{Binding Path}"/>
+                                    <GridViewColumn Header="Tipo" Width="100" DisplayMemberBinding="{Binding Type}"/>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+        </Grid>
     </Grid>
 </Window>

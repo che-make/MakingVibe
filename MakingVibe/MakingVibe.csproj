@@ -8,4 +8,10 @@
         <UseWPF>true</UseWPF>
     </PropertyGroup>
 
+    <ItemGroup>
+      <Compile Update="RenameDialog.cs">
+        <DependentUpon>RenameDialog.xaml</DependentUpon>
+      </Compile>
+    </ItemGroup>
+
 </Project>
