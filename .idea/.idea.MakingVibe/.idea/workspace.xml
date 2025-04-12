@@ -7,21 +7,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5d4e1e3c-5ecc-4b31-96f7-855943b811fa" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/.idea.MakingVibe/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/MakingVibe/RenameDialog.cs" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/MakingVibe/RenameDialog.xaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/.idea.MakingVibe/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.MakingVibe/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/MainWindow.xaml" beforeDir="false" afterPath="$PROJECT_DIR$/MakingVibe/MainWindow.xaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/MainWindow.xaml.cs" beforeDir="false" afterPath="$PROJECT_DIR$/MakingVibe/MainWindow.xaml.cs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/MakingVibe.csproj" beforeDir="false" afterPath="$PROJECT_DIR$/MakingVibe/MakingVibe.csproj" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MainWindow.baml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MainWindow.g.cs" beforeDir="false" afterPath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MainWindow.g.cs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MakingVibe.AssemblyInfo.cs" beforeDir="false" afterPath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MakingVibe.AssemblyInfo.cs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MakingVibe.AssemblyInfoInputs.cache" beforeDir="false" afterPath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MakingVibe.AssemblyInfoInputs.cache" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MakingVibe_MarkupCompile.cache" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/MakingVibe/obj/Debug/net9.0-windows/MakingVibe_MarkupCompile.lref" beforeDir="false" />
-    </list>
+    <list default="true" id="5d4e1e3c-5ecc-4b31-96f7-855943b811fa" name="Changes" comment="primer prompt" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -30,6 +16,7 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="MetaFilesCheckinStateConfiguration" checkMetaFiles="true" />
   <component name="ProjectColorInfo"><![CDATA[{
   "customColor": "",
   "associatedIndex": 6
@@ -85,15 +72,27 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1744465571381</updated>
-      <workItem from="1744465572538" duration="3169000" />
+      <workItem from="1744465572538" duration="3766000" />
     </task>
+    <task id="LOCAL-00001" summary="primer prompt">
+      <option name="closed" value="true" />
+      <created>1744471992546</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1744471992546</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
+  <component name="UnityCheckinConfiguration" checkUnsavedScenes="true" />
   <component name="UnityProjectConfiguration" hasMinimizedUI="false" />
   <component name="VcsManagerConfiguration">
     <option name="CLEAR_INITIAL_COMMIT_MESSAGE" value="true" />
+    <MESSAGE value="primer prompt" />
+    <option name="LAST_COMMIT_MESSAGE" value="primer prompt" />
   </component>
 </project>
