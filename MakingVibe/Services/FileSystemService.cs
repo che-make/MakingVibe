@@ -21,6 +21,7 @@ namespace MakingVibe.Services
             "node_modules", "__pycache__",
             "target", // Common for Rust/Java
             "build"   // Common for C++/CMake etc.
+            // Add any other folders you commonly want to ignore for selection purposes
         };
 
         // Consider making ignored folders configurable if needed
@@ -45,11 +46,11 @@ namespace MakingVibe.Services
             try
             {
                 var children = new List<FileSystemItem>();
+                var dirInfoRoot = new DirectoryInfo(directoryPath); // Use DirectoryInfo for access checks
 
                 // Get directories, filter ignored ones, and sort
-                var directories = Directory.GetDirectories(directoryPath)
-                                          .Where(d => !_ignoredFolderNames.Contains(Path.GetFileName(d)))
-                                          .Select(d => new DirectoryInfo(d))
+                var directories = dirInfoRoot.GetDirectories() // Use DirectoryInfo method
+                                          .Where(d => !_ignoredFolderNames.Contains(d.Name))
                                           .OrderBy(d => d.Name);
 
                 foreach (var dirInfo in directories)
@@ -58,8 +59,7 @@ namespace MakingVibe.Services
                 }
 
                 // Get files, sort, and add
-                var files = Directory.GetFiles(directoryPath)
-                                    .Select(f => new FileInfo(f))
+                var files = dirInfoRoot.GetFiles() // Use DirectoryInfo method
                                     .OrderBy(f => f.Name);
 
                 foreach (var fileInfo in files)
@@ -207,7 +207,7 @@ namespace MakingVibe.Services
         /// </summary>
         public void FindTextFilesRecursive(FileSystemItem startItem, List<FileSystemItem> collectedFiles, string? rootPath)
         {
-            ArgumentNullException.ThrowIfNull(rootPath);
+            ArgumentNullException.ThrowIfNull(rootPath); // Keep this check
 
             if (!startItem.IsDirectory)
             {
@@ -256,5 +256,60 @@ namespace MakingVibe.Services
                 // Log and continue if possible
             }
         }
-    }
-}
+
+        // --- NEW METHOD ---
+        /// <summary>
+        /// Recursively finds all files (not directories) within a given directory structure,
+        /// respecting ignored folders.
+        /// </summary>
+        /// <param name="startDirectoryItem">The FileSystemItem representing the starting directory.</param>
+        /// <param name="collectedFiles">A list to which found file FileSystemItems will be added.</param>
+        public void FindAllFilesRecursive(FileSystemItem startDirectoryItem, List<FileSystemItem> collectedFiles)
+        {
+            // Ensure it's actually a directory we're starting with
+            if (!startDirectoryItem.IsDirectory || !Directory.Exists(startDirectoryItem.Path))
+            {
+                return;
+            }
+
+            try
+            {
+                var dirInfo = new DirectoryInfo(startDirectoryItem.Path);
+
+                // Add files in the current directory
+                foreach (var fileInfo in dirInfo.GetFiles())
+                {
+                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false };
+                    // Use Path equality for uniqueness check within this specific operation run
+                    if (!collectedFiles.Any(f => f.Path.Equals(fileFsi.Path, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        collectedFiles.Add(fileFsi);
+                    }
+                }
+
+                // Process subdirectories recursively, respecting ignored list
+                foreach (var subDirInfo in dirInfo.GetDirectories())
+                {
+                    if (!_ignoredFolderNames.Contains(subDirInfo.Name))
+                    {
+                        // Create a FileSystemItem for the subdirectory to pass down
+                        var subDirFsi = new FileSystemItem { Name = subDirInfo.Name, Path = subDirInfo.FullName, Type = "Directorio", IsDirectory = true };
+                        FindAllFilesRecursive(subDirFsi, collectedFiles); // Recursive call
+                    }
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                Debug.WriteLine($"Access denied during recursive file search in: {startDirectoryItem.Path}");
+                // Skip this directory silently
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error during recursive file search in {startDirectoryItem.Path}: {ex.Message}");
+                // Log and potentially skip or throw depending on desired behavior
+            }
+        }
+        // --- END NEW METHOD ---
+
+    } // End class FileSystemService
+} // End namespace MakingVibe.Services
