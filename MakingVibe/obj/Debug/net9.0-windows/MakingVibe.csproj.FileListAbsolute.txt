@@ -18,3 +18,6 @@ C:\Users\chema\RiderProjects\MakingVibe\MakingVibe\obj\Debug\net9.0-windows\refi
 C:\Users\chema\RiderProjects\MakingVibe\MakingVibe\obj\Debug\net9.0-windows\MakingVibe.pdb
 C:\Users\chema\RiderProjects\MakingVibe\MakingVibe\obj\Debug\net9.0-windows\MakingVibe.genruntimeconfig.cache
 C:\Users\chema\RiderProjects\MakingVibe\MakingVibe\obj\Debug\net9.0-windows\ref\MakingVibe.dll
+C:\Users\chema\RiderProjects\MakingVibe\MakingVibe\obj\Debug\net9.0-windows\RenameDialog.baml
+C:\Users\chema\RiderProjects\MakingVibe\MakingVibe\obj\Debug\net9.0-windows\RenameDialog.g.cs
+C:\Users\chema\RiderProjects\MakingVibe\MakingVibe\obj\Debug\net9.0-windows\MakingVibe.sourcelink.json

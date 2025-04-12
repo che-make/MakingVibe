@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MakingVibe")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+bf33ce41088f4074166a0f1807929c53f00159ce")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c0c495283623ff7c681d3e2ea1034377473a3534")]
 [assembly: System.Reflection.AssemblyProductAttribute("MakingVibe")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MakingVibe")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
