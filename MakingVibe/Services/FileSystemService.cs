@@ -257,7 +257,6 @@ namespace MakingVibe.Services
             }
         }
 
-        // --- NEW METHOD ---
         /// <summary>
         /// Recursively finds all files (not directories) within a given directory structure,
         /// respecting ignored folders.
@@ -309,7 +308,69 @@ namespace MakingVibe.Services
                 // Log and potentially skip or throw depending on desired behavior
             }
         }
+
+        // --- NEW METHOD ---
+        /// <summary>
+        /// Recursively finds all descendant files AND directories starting from a given directory,
+        /// respecting ignored folders. The starting directory itself is NOT included.
+        /// </summary>
+        /// <param name="startDirectoryItem">The FileSystemItem representing the starting directory.</param>
+        /// <param name="collectedItems">A list to which found descendant FileSystemItems (files and directories) will be added.</param>
+        public void FindAllDescendantsRecursive(FileSystemItem startDirectoryItem, List<FileSystemItem> collectedItems)
+        {
+             // Ensure it's actually a directory we're starting with
+            if (!startDirectoryItem.IsDirectory || !Directory.Exists(startDirectoryItem.Path))
+            {
+                return;
+            }
+
+            try
+            {
+                var dirInfo = new DirectoryInfo(startDirectoryItem.Path);
+
+                // Add files in the current directory
+                foreach (var fileInfo in dirInfo.GetFiles())
+                {
+                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false };
+                    // Use Path equality for uniqueness check
+                    if (!collectedItems.Any(f => f.Path.Equals(fileFsi.Path, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        collectedItems.Add(fileFsi);
+                    }
+                }
+
+                // Process subdirectories recursively, respecting ignored list
+                foreach (var subDirInfo in dirInfo.GetDirectories())
+                {
+                    if (!_ignoredFolderNames.Contains(subDirInfo.Name))
+                    {
+                        // Create a FileSystemItem for the subdirectory
+                        var subDirFsi = new FileSystemItem { Name = subDirInfo.Name, Path = subDirInfo.FullName, Type = "Directorio", IsDirectory = true };
+
+                        // Add the subdirectory ITSELF to the list
+                         if (!collectedItems.Any(f => f.Path.Equals(subDirFsi.Path, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            collectedItems.Add(subDirFsi);
+                        }
+
+                        // Recursively find descendants *within* this subdirectory
+                        FindAllDescendantsRecursive(subDirFsi, collectedItems);
+                    }
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                Debug.WriteLine($"Access denied during recursive descendant search in: {startDirectoryItem.Path}");
+                // Skip this directory silently
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error during recursive descendant search in {startDirectoryItem.Path}: {ex.Message}");
+                // Log and potentially skip or throw depending on desired behavior
+            }
+        }
         // --- END NEW METHOD ---
+
 
     } // End class FileSystemService
 } // End namespace MakingVibe.Services
