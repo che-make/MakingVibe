@@ -9,4 +9,15 @@
         <UseWindowsForms>true</UseWindowsForms>
     </PropertyGroup>
 
+    <ItemGroup>
+      <None Remove="makingvibe.ico" />
+      <Resource Include="makingvibe.ico" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Compile Update="RenameDialog.cs">
+        <DependentUpon>RenameDialog.xaml</DependentUpon>
+      </Compile>
+    </ItemGroup>
+
 </Project>

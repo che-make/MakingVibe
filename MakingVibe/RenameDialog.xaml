@@ -1,20 +1,25 @@
 ﻿<Window x:Class="MakingVibe.RenameDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Renombrar" Height="150" Width="400" WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
-    <Grid Margin="10">
+        Title="Renombrar" Height="160" Width="400" 
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        FocusManager.FocusedElement="{Binding ElementName=txtNewName}"> <!-- Set initial focus -->
+    <Grid Margin="15">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
-        
+
         <TextBlock Grid.Row="0" Text="Nuevo nombre:" Margin="0,0,0,5"/>
-        <TextBox Grid.Row="1" x:Name="txtNewName" Padding="5" Margin="0,0,0,15"/>
-        
+        <TextBox Grid.Row="1" x:Name="txtNewName" Padding="5" Margin="0,0,0,15" KeyDown="TxtNewName_KeyDown"/> <!-- Add KeyDown -->
+
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom">
-            <Button x:Name="btnCancel" Content="Cancelar" Width="80" Margin="0,0,10,0" Padding="5" Click="btnCancel_Click"/>
-            <Button x:Name="btnAccept" Content="Aceptar" Width="80" Padding="5" Click="btnAccept_Click"/>
+            <!-- Set IsCancel=True for automatic Esc key handling -->
+            <Button x:Name="btnCancel" Content="Cancelar" Width="80" Margin="0,0,10,0" Padding="5" Click="btnCancel_Click" IsCancel="True"/>
+            <!-- Set IsDefault=True for automatic Enter key handling -->
+            <Button x:Name="btnAccept" Content="Aceptar" Width="80" Padding="5" Click="btnAccept_Click" IsDefault="True"/>
         </StackPanel>
     </Grid>
 </Window>
