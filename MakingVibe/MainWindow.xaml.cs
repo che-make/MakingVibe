@@ -1,142 +1,112 @@
-﻿using System;
+﻿using MakingVibe.Models; // Use the model namespace
+using MakingVibe.Services; // Use the services namespace
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.ComponentModel; // Required for INotifyPropertyChanged (optional but good practice)
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text; // For StringBuilder
-using System.Threading.Tasks; // For Task, async, await
+using System.Text;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input; // For Commands and Cursor
-using System.Windows.Media; // For Brushes etc.
-// Use specific using for FolderBrowserDialog to avoid conflicts
-using WinForms = System.Windows.Forms;
+using System.Windows.Input;
+using System.Windows.Media;
+using Brushes = System.Windows.Media.Brushes;
+using CheckBox = System.Windows.Controls.CheckBox;
+using Clipboard = System.Windows.Clipboard;
+using Cursors = System.Windows.Input.Cursors;
+using MessageBox = System.Windows.MessageBox;
+using Orientation = System.Windows.Controls.Orientation;
+using WinForms = System.Windows.Forms; // Alias for FolderBrowserDialog
 
 namespace MakingVibe
 {
     public partial class MainWindow : Window
     {
+        // --- Services ---
+        private readonly FileSystemService _fileSystemService;
+        private readonly AiCopyService _aiCopyService;
+        private readonly SettingsService _settingsService;
+        private readonly GitService _gitService;
+
+        // --- UI State & Data ---
         private string? rootPath;
-        // Use ObservableCollection for automatic UI updates when items are added/removed
         private readonly ObservableCollection<FileSystemItem> selectedItems = new();
-        // Keep track of TreeViewItems for easier manipulation (like unchecking)
         private readonly Dictionary<string, TreeViewItem> pathToTreeViewItemMap = new();
 
-        private string? clipboardPath; // Path for copy/cut
+        // Clipboard state (managed by UI)
+        private List<FileSystemItem> clipboardItems = new();
         private bool isCutOperation;
-        private List<FileSystemItem> clipboardItems = new(); // Store actual items for copy/cut
 
-        // List of folders to ignore
-        private readonly HashSet<string> ignoredFolderNames = new(StringComparer.OrdinalIgnoreCase)
-        {
-            ".git", ".vs", ".vscode", ".idea",
-            "bin", "obj",
-            "node_modules", "__pycache__",
-            "target", // Common for Rust/Java
-            "build"   // Common for C++/CMake etc.
-        };
-
-        // List of file extensions considered as text for the AI copy feature
-        private readonly HashSet<string> textFileExtensions = new(StringComparer.OrdinalIgnoreCase)
-        {
-            // Basic text files
-            ".txt", ".log", ".md", ".csv", ".tsv", ".rtf",
-            // Web development
-            ".html", ".htm", ".css", ".js", ".jsx", ".ts", ".tsx", ".json", ".xml", ".yaml", ".yml", ".svg", ".vue", ".svelte",
-            // Configuration files
-            ".config", ".ini", ".toml", ".conf", ".properties", ".env", ".editorconfig", ".csproj", ".sln", ".xaml", ".gradle", ".settings", ".props",
-            // Scripts and shell
-            ".bat", ".cmd", ".ps1", ".sh", ".bash", ".zsh", ".fish", ".py", ".rb", ".php", ".pl", ".lua", ".tcl",
-            // Programming languages
-            ".cs", ".java", ".c", ".cpp", ".h", ".hpp", ".go", ".rs", ".swift", ".kt", ".scala", ".dart", ".groovy", ".m", ".r", ".sql", ".vb", ".fs", ".pas",
-            // Other common text formats
-            ".gitignore", ".dockerignore", ".gitattributes", ".sql", ".readme", ".inf", ".tex"
-            // Add more as needed
-        };
-
-        // Commands for Key Bindings
+        // Commands
         public static RoutedCommand RefreshCommand = new RoutedCommand();
         public static RoutedCommand DeleteCommand = new RoutedCommand();
+        // Add more RoutedCommands if you bind other actions (Copy, Cut, Paste, Rename)
 
         public MainWindow()
         {
             InitializeComponent();
+
+            // Instantiate services
+            _fileSystemService = new FileSystemService();
+            _aiCopyService = new AiCopyService(_fileSystemService); // Inject dependency
+            _settingsService = new SettingsService();
+            _gitService = new GitService();
+
             // Bind commands
-            CommandBindings.Add(new CommandBinding(RefreshCommand, btnRefresh_Click, (s, e) => e.CanExecute = !string.IsNullOrEmpty(rootPath)));
-            CommandBindings.Add(new CommandBinding(DeleteCommand, btnDelete_Click, (s, e) => e.CanExecute = selectedItems.Count > 0));
+            CommandBindings.Add(new CommandBinding(RefreshCommand, btnRefresh_Click, CanExecuteRefresh));
+            CommandBindings.Add(new CommandBinding(DeleteCommand, btnDelete_Click, CanExecuteDelete));
+            // Add more CommandBindings here...
 
             // Update status bar when selection changes
             selectedItems.CollectionChanged += (s, e) => UpdateStatusBarAndButtonStates();
 
-            // Set initial status
+            // Set initial state
             UpdateStatusBarAndButtonStates("Listo.");
             SetWindowTitleFromGit();
         }
+
+        // --- Command CanExecute Handlers ---
+        private void CanExecuteRefresh(object sender, CanExecuteRoutedEventArgs e)
+        {
+            e.CanExecute = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
+        }
+
+        private void CanExecuteDelete(object sender, CanExecuteRoutedEventArgs e)
+        {
+            e.CanExecute = selectedItems.Count > 0;
+        }
+
+        // Add CanExecute handlers for other commands if needed...
 
         // --- Window Load/Close ---
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            LoadSettings();
-            if (!string.IsNullOrEmpty(rootPath) && Directory.Exists(rootPath))
+            rootPath = _settingsService.LoadLastRootPath();
+
+            if (!string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath))
             {
                 UpdateStatusBarAndButtonStates($"Cargando directorio: {rootPath}...");
-                LoadDirectoryTree(rootPath); // Load last path if valid
+                LoadDirectoryTreeUI(rootPath);
                 UpdateStatusBarAndButtonStates("Listo.");
             }
             else
             {
                 txtCurrentPath.Text = "Ruta actual: (Seleccione una carpeta raíz)";
                 UpdateStatusBarAndButtonStates("Por favor, seleccione una carpeta raíz.");
+                rootPath = null; // Ensure rootPath is null if loaded path is invalid
             }
         }
 
-        private void LoadSettings()
+        // Save settings on closing (optional, could save on path change)
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
-            // Consider using a more robust settings mechanism if needed
-            try
-            {
-                // Simple way using built-in settings (add reference to System.Configuration if not present)
-                // You might need to add a Settings.settings file to your project properties
-                // rootPath = MakingVibe.Properties.Settings.Default.LastRootPath;
-                // For simplicity without adding Settings file now, use a simple file:
-                string settingsFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "makingvibe.settings");
-                if (File.Exists(settingsFile))
-                {
-                    rootPath = File.ReadAllText(settingsFile)?.Trim();
-                }
-
-            }
-            catch (Exception ex)
-            {
-                 Debug.WriteLine($"Error loading settings: {ex.Message}");
-                 rootPath = null; // Reset if error
-            }
+            _settingsService.SaveLastRootPath(rootPath);
+            base.OnClosing(e);
         }
 
-        private void SaveSettings()
-        {
-             try
-            {
-                // MakingVibe.Properties.Settings.Default.LastRootPath = rootPath;
-                // MakingVibe.Properties.Settings.Default.Save();
-                string settingsFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "makingvibe.settings");
-                if (!string.IsNullOrEmpty(rootPath))
-                {
-                    File.WriteAllText(settingsFile, rootPath);
-                }
-                else if(File.Exists(settingsFile))
-                {
-                    File.Delete(settingsFile); // Clear setting if no path
-                }
-            }
-            catch (Exception ex)
-            {
-                 Debug.WriteLine($"Error saving settings: {ex.Message}");
-            }
-        }
 
         // --- UI Event Handlers ---
 
@@ -145,19 +115,20 @@ namespace MakingVibe
             using var dialog = new WinForms.FolderBrowserDialog
             {
                 Description = "Seleccione la carpeta raíz del proyecto",
-                UseDescriptionForTitle = true, // Use description as title
-                ShowNewFolderButton = true     // Allow creating new folders
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = true
             };
 
-            // Try setting initial directory
-             if (!string.IsNullOrEmpty(rootPath) && Directory.Exists(rootPath))
-             {
-                 dialog.SelectedPath = rootPath;
-             }
-             else if (!string.IsNullOrEmpty(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments))) // Fallback
-             {
-                  dialog.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-             }
+            // Set initial directory
+            string? initialDir = rootPath;
+            if (string.IsNullOrEmpty(initialDir) || !_fileSystemService.DirectoryExists(initialDir))
+            {
+                 initialDir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            }
+            if (!string.IsNullOrEmpty(initialDir)) // Check if MyDocuments exists
+            {
+                 dialog.SelectedPath = initialDir; // Use SelectedPath for initial selection
+            }
 
 
             if (dialog.ShowDialog() == WinForms.DialogResult.OK)
@@ -165,216 +136,215 @@ namespace MakingVibe
                 rootPath = dialog.SelectedPath;
                 txtCurrentPath.Text = $"Ruta actual: {rootPath}";
                 UpdateStatusBarAndButtonStates($"Cargando directorio: {rootPath}...");
-                LoadDirectoryTree(rootPath);
-                SaveSettings(); // Save the newly selected path
+                LoadDirectoryTreeUI(rootPath); // Reload UI
+                _settingsService.SaveLastRootPath(rootPath); // Save the newly selected path immediately
                 UpdateStatusBarAndButtonStates("Listo.");
             }
         }
 
         private void btnClearSelection_Click(object sender, RoutedEventArgs e)
         {
-            ClearAllSelections();
+            ClearAllSelectionsUI();
         }
 
-        private void treeViewFiles_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+        // Preview handler
+        private async void treeViewFiles_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
         {
-            // Renamed from TreeViewItem_Selected to avoid confusion with item selection *event* vs *state*
-            // This handles showing the preview when an item is clicked in the tree
-            if (e.NewValue is TreeViewItem treeViewItem && treeViewItem.Tag is FileSystemItem fsi)
+            txtFileContent.Text = string.Empty; // Clear preview initially
+            if (e.NewValue is TreeViewItem { Tag: FileSystemItem fsi }) // Use pattern matching
             {
-                ShowPreview(fsi);
-            }
-            else
-            {
-                txtFileContent.Text = string.Empty; // Clear preview if selection is lost or invalid
+                await ShowPreviewAsync(fsi);
             }
         }
 
+        // Lazy loading handler
         private void TreeViewItem_Expanded(object sender, RoutedEventArgs e)
         {
-            // Handles lazy loading when a node is expanded
-            if (sender is TreeViewItem treeViewItem && treeViewItem.Tag is FileSystemItem fsi && fsi.IsDirectory)
+            if (sender is TreeViewItem { Tag: FileSystemItem fsi } treeViewItem && fsi.IsDirectory)
             {
                 // Check if it needs loading (contains the dummy item)
                 if (treeViewItem.Items.Count == 1 && treeViewItem.Items[0] is string loadingText && loadingText == "Cargando...")
                 {
                     treeViewItem.Items.Clear(); // Remove dummy item
-                    LoadChildren(treeViewItem, fsi.Path);
+                    LoadChildrenUI(treeViewItem, fsi.Path); // Load actual children UI elements
                 }
             }
             e.Handled = true; // Prevent bubbling
         }
 
-         // --- Context Menu ---
+        // --- Context Menu ---
         private void TreeViewContextMenu_ContextMenuOpening(object sender, ContextMenuEventArgs e)
         {
-            // Enable/Disable context menu items based on the current selection
             bool isItemSelected = treeViewFiles.SelectedItem != null;
-            bool isTextFileSelected = false;
-            FileSystemItem? selectedFsi = null;
-
-            if (isItemSelected && treeViewFiles.SelectedItem is TreeViewItem tvi && tvi.Tag is FileSystemItem fsi)
-            {
-                 selectedFsi = fsi;
-                 isTextFileSelected = !fsi.IsDirectory && IsTextFile(fsi.Path);
-            }
+            FileSystemItem? selectedFsi = (treeViewFiles.SelectedItem as TreeViewItem)?.Tag as FileSystemItem;
+            bool isTextFileSelected = selectedFsi != null && !selectedFsi.IsDirectory && FileHelper.IsTextFile(selectedFsi.Path);
 
             // Enable actions based on selection state
-            ctxCopyText.IsEnabled = selectedItems.Count > 0 && selectedItems.Any(item => item.IsDirectory || IsTextFile(item.Path));
-            ctxRename.IsEnabled = isItemSelected && selectedItems.Count == 1 && selectedFsi != null; // Only rename single selection
+            ctxCopyText.IsEnabled = selectedItems.Count > 0 && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path));
+            ctxRename.IsEnabled = selectedItems.Count == 1 && selectedFsi != null;
             ctxDelete.IsEnabled = selectedItems.Count > 0;
-            ctxRefreshNode.IsEnabled = isItemSelected && selectedFsi != null && selectedFsi.IsDirectory; // Only refresh directories
+            ctxRefreshNode.IsEnabled = isItemSelected && selectedFsi != null && selectedFsi.IsDirectory;
             ctxRefreshAll.IsEnabled = !string.IsNullOrEmpty(rootPath);
         }
 
         private void CtxRefreshNode_Click(object sender, RoutedEventArgs e)
         {
-            // Refreshes the selected node in the tree
-            if (treeViewFiles.SelectedItem is TreeViewItem selectedTreeViewItem &&
-                selectedTreeViewItem.Tag is FileSystemItem fsi && fsi.IsDirectory)
+            if (treeViewFiles.SelectedItem is TreeViewItem { Tag: FileSystemItem fsi } selectedTreeViewItem && fsi.IsDirectory)
             {
-                // Clear existing children and reload
-                selectedTreeViewItem.Items.Clear();
-                // Re-add the dummy item to trigger reload on next expand if desired, or load directly
-                LoadChildren(selectedTreeViewItem, fsi.Path);
-                 // Optionally re-expand if it was expanded
-                 selectedTreeViewItem.IsExpanded = true;
-                UpdateStatusBarAndButtonStates($"Nodo '{fsi.Name}' refrescado.");
+                RefreshNodeUI(selectedTreeViewItem, fsi);
             }
         }
 
-        // --- Core Logic: Tree Loading ---
+        // --- Core UI Logic: Tree Loading & Manipulation ---
 
-        private void LoadDirectoryTree(string path)
+        /// <summary>
+        /// Clears and reloads the entire TreeView UI based on the specified root path.
+        /// </summary>
+        private void LoadDirectoryTreeUI(string path)
         {
+            treeViewFiles.Items.Clear();
+            pathToTreeViewItemMap.Clear();
+            selectedItems.Clear(); // Clear selection when reloading tree
+
+            if (!_fileSystemService.DirectoryExists(path))
+            {
+                MessageBox.Show($"El directorio raíz especificado no existe o no es accesible:\n{path}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                rootPath = null; // Reset root path
+                txtCurrentPath.Text = "Ruta actual: (Seleccione una carpeta raíz)";
+                _settingsService.SaveLastRootPath(null); // Clear setting
+                UpdateStatusBarAndButtonStates("Error al cargar el directorio raíz.");
+                return;
+            }
+
             try
             {
-                treeViewFiles.Items.Clear();
-                pathToTreeViewItemMap.Clear();
-                selectedItems.Clear(); // Clear selection when reloading tree
-
-                if (!Directory.Exists(path))
-                {
-                    System.Windows.MessageBox.Show($"El directorio raíz especificado no existe:\n{path}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    rootPath = null;
-                    txtCurrentPath.Text = "Ruta actual: (Seleccione una carpeta raíz)";
-                    SaveSettings();
-                    UpdateStatusBarAndButtonStates("Error al cargar el directorio raíz.");
-                    return;
-                }
-
-
-                var rootDirectoryInfo = new DirectoryInfo(path);
+                var rootDirectoryInfo = new DirectoryInfo(path); // Use DirectoryInfo for root name
                 var rootFsi = new FileSystemItem
                 {
-                    Name = rootDirectoryInfo.Name,
+                    Name = rootDirectoryInfo.Name, // Display root folder name
                     Path = rootDirectoryInfo.FullName,
                     Type = "Directorio Raíz",
                     IsDirectory = true
                 };
 
-                var rootTreeViewItem = CreateTreeViewItem(rootFsi);
+                var rootTreeViewItem = CreateTreeViewItemUI(rootFsi);
                 treeViewFiles.Items.Add(rootTreeViewItem);
+                pathToTreeViewItemMap[rootFsi.Path] = rootTreeViewItem; // Map the root
 
-                // Load initial children for the root
-                LoadChildren(rootTreeViewItem, rootFsi.Path);
+                // Load initial children UI for the root
+                LoadChildrenUI(rootTreeViewItem, rootFsi.Path);
                 rootTreeViewItem.IsExpanded = true; // Expand root by default
-
             }
-            catch (UnauthorizedAccessException)
+            catch (Exception ex) // Catch unexpected errors during UI creation
             {
-                System.Windows.MessageBox.Show($"No se tienen permisos para acceder a la carpeta:\n{path}", "Acceso Denegado", MessageBoxButton.OK, MessageBoxImage.Warning);
-                 UpdateStatusBarAndButtonStates("Error de permisos al cargar.");
-            }
-            catch (Exception ex)
-            {
-                System.Windows.MessageBox.Show($"Error inesperado al cargar el directorio:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                UpdateStatusBarAndButtonStates("Error al cargar.");
+                MessageBox.Show($"Error inesperado al construir el árbol de directorios:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                UpdateStatusBarAndButtonStates("Error al mostrar el árbol.");
+                Debug.WriteLine($"Error LoadDirectoryTreeUI: {ex}");
             }
             finally
             {
-                 // Ensure button states are correct even if loading fails partially
-                UpdateStatusBarAndButtonStates();
+                UpdateStatusBarAndButtonStates(); // Ensure buttons/status are correct
             }
         }
 
-        // Loads the children (files and subdirectories) for a given TreeViewItem representing a directory
-        private void LoadChildren(TreeViewItem parentTreeViewItem, string directoryPath)
+        /// <summary>
+        /// Loads the children UI (TreeViewItems) for a given parent TreeViewItem.
+        /// </summary>
+        private void LoadChildrenUI(TreeViewItem parentTreeViewItem, string directoryPath)
         {
-            try
+            // Use FileSystemService to get the data
+            var childrenData = _fileSystemService.GetDirectoryChildren(directoryPath);
+
+            parentTreeViewItem.Items.Clear(); // Clear existing items (like "Cargando...")
+
+            if (childrenData == null) // Access denied case from service
             {
-                 // Get directories, filter ignored ones, and sort
-                var directories = Directory.GetDirectories(directoryPath)
-                                          .Where(d => !ignoredFolderNames.Contains(Path.GetFileName(d)))
-                                          .Select(d => new DirectoryInfo(d))
-                                          .OrderBy(d => d.Name);
-
-                foreach (var dirInfo in directories)
-                {
-                    var dirFsi = new FileSystemItem { Name = dirInfo.Name, Path = dirInfo.FullName, Type = "Directorio", IsDirectory = true };
-                    var dirTreeViewItem = CreateTreeViewItem(dirFsi);
-                    // Add dummy node for lazy loading
-                    dirTreeViewItem.Items.Add("Cargando...");
-                    parentTreeViewItem.Items.Add(dirTreeViewItem);
-                }
-
-                 // Get files, sort, and add
-                var files = Directory.GetFiles(directoryPath)
-                                    .Select(f => new FileInfo(f))
-                                    .OrderBy(f => f.Name);
-
-                foreach (var fileInfo in files)
-                {
-                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false };
-                    var fileTreeViewItem = CreateTreeViewItem(fileFsi);
-                    parentTreeViewItem.Items.Add(fileTreeViewItem);
-                }
+                parentTreeViewItem.Items.Add(new TreeViewItem { Header = "[Acceso Denegado]", Foreground = Brushes.Gray, IsEnabled = false });
+                return;
             }
-            catch (UnauthorizedAccessException)
+
+            if (!childrenData.Any())
             {
-                // Add a node indicating access denied, but don't crash
-                 parentTreeViewItem.Items.Add(new TreeViewItem { Header = "[Acceso Denegado]", Foreground = System.Windows.Media.Brushes.Gray, IsEnabled = false });
-                 Debug.WriteLine($"Access denied loading children for: {directoryPath}");
+                 // Optionally add a placeholder if the directory is empty
+                 // parentTreeViewItem.Items.Add(new TreeViewItem { Header = "[Vacío]", Foreground = Brushes.Gray, IsEnabled = false });
+                return;
             }
-            catch (Exception ex)
+
+            // Create TreeViewItems for each child data item
+            foreach (var fsi in childrenData)
             {
-                 // Log error, maybe add an error node
-                parentTreeViewItem.Items.Add(new TreeViewItem { Header = "[Error al Cargar]", Foreground = System.Windows.Media.Brushes.Red, IsEnabled = false });
-                Debug.WriteLine($"Error loading children for {directoryPath}: {ex.Message}");
+                var childTreeViewItem = CreateTreeViewItemUI(fsi);
+                parentTreeViewItem.Items.Add(childTreeViewItem);
+                pathToTreeViewItemMap[fsi.Path] = childTreeViewItem; // Add to map
+
+                // Add dummy node for lazy loading if it's a directory
+                if (fsi.IsDirectory)
+                {
+                     // Check if the directory actually contains anything before adding dummy node
+                     // This avoids the dummy node in empty directories, but requires an extra IO check.
+                     // Keep it simple for now: always add dummy node.
+                    childTreeViewItem.Items.Add("Cargando...");
+                }
             }
         }
 
-
-        // Creates a TreeViewItem for a FileSystemItem (file or directory)
-        private TreeViewItem CreateTreeViewItem(FileSystemItem fsi)
+        /// <summary>
+        /// Refreshes a specific node in the TreeView UI.
+        /// </summary>
+        private void RefreshNodeUI(TreeViewItem nodeToRefresh, FileSystemItem fsi)
         {
-            var stackPanel = new StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal };
+            bool wasExpanded = nodeToRefresh.IsExpanded;
+            nodeToRefresh.Items.Clear(); // Clear existing UI children
 
-            var checkbox = new System.Windows.Controls.CheckBox
+            // Clear potentially outdated entries from the map for children of this node
+            var keysToRemove = pathToTreeViewItemMap.Keys
+                                .Where(k => k.StartsWith(fsi.Path + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                                .ToList();
+            foreach (var key in keysToRemove)
+            {
+                pathToTreeViewItemMap.Remove(key);
+            }
+
+            // Reload children UI
+            LoadChildrenUI(nodeToRefresh, fsi.Path);
+
+            // Restore expansion state if needed
+            nodeToRefresh.IsExpanded = wasExpanded;
+
+            UpdateStatusBarAndButtonStates($"Nodo '{fsi.Name}' refrescado.");
+        }
+
+        /// <summary>
+        /// Creates a TreeViewItem UI element for a given FileSystemItem.
+        /// </summary>
+        private TreeViewItem CreateTreeViewItemUI(FileSystemItem fsi)
+        {
+            var stackPanel = new StackPanel { Orientation = Orientation.Horizontal };
+
+            var checkbox = new CheckBox
             {
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 5, 0),
-                Tag = fsi // Tag the checkbox directly with the FileSystemItem
+                Tag = fsi, // Tag the checkbox with the data item
+                IsChecked = selectedItems.Contains(fsi) // Sync check state
             };
             checkbox.Checked += Checkbox_Checked;
             checkbox.Unchecked += Checkbox_Unchecked;
-            // Sync checkbox state if the item is already in selectedItems (e.g., after refresh)
-            checkbox.IsChecked = selectedItems.Contains(fsi);
 
-
-            // Add simple visual indicator [D] or [F]
+            // Add visual indicator [D] or [F]
             var typeIndicator = new TextBlock
             {
-                 Text = fsi.IsDirectory ? "[D] " : "[F] ",
-                 FontWeight = FontWeights.SemiBold,
-                 Foreground = fsi.IsDirectory ? System.Windows.Media.Brushes.DarkGoldenrod : System.Windows.Media.Brushes.DarkSlateBlue,
-                 VerticalAlignment = VerticalAlignment.Center
+                Text = fsi.IsDirectory ? "[D] " : "[F] ",
+                FontWeight = FontWeights.SemiBold,
+                Foreground = fsi.IsDirectory ? Brushes.DarkGoldenrod : Brushes.DarkSlateBlue,
+                VerticalAlignment = VerticalAlignment.Center
             };
 
             var textBlock = new TextBlock
             {
                 Text = fsi.Name,
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Center,
+                ToolTip = fsi.Path // Show full path on hover
             };
 
             stackPanel.Children.Add(checkbox);
@@ -384,498 +354,255 @@ namespace MakingVibe
             var treeViewItem = new TreeViewItem
             {
                 Header = stackPanel,
-                Tag = fsi // Tag the TreeViewItem itself with the FileSystemItem
+                Tag = fsi // Tag the TreeViewItem itself with the data item
             };
 
-             // Store mapping for easy access
-             pathToTreeViewItemMap[fsi.Path] = treeViewItem;
-
-             // Add event handlers only if needed here (Expanded is handled above)
-             if (fsi.IsDirectory)
-             {
-                 treeViewItem.Expanded += TreeViewItem_Expanded;
-             }
-             // SelectedItemChanged on TreeView handles preview now
+            // Attach lazy loading handler only to directories
+            if (fsi.IsDirectory)
+            {
+                treeViewItem.Expanded += TreeViewItem_Expanded;
+            }
 
             return treeViewItem;
         }
 
-        // --- Selection Handling ---
+
+        // --- Selection Handling (UI Related) ---
 
         private void Checkbox_Checked(object sender, RoutedEventArgs e)
         {
-            if (sender is System.Windows.Controls.CheckBox checkbox && checkbox.Tag is FileSystemItem fsi)
+            if (sender is CheckBox { Tag: FileSystemItem fsi } checkbox)
             {
                 if (!selectedItems.Contains(fsi))
                 {
-                    selectedItems.Add(fsi);
+                    selectedItems.Add(fsi); // Triggers CollectionChanged -> UpdateStatusBarAndButtonStates
                 }
-                // No automatic recursive checking visualization - keep UI simple.
-                // Recursive selection is handled during the "Copy Text" action.
             }
-            // UpdateStatusBarAndButtonStates(); // Called by CollectionChanged
         }
 
         private void Checkbox_Unchecked(object sender, RoutedEventArgs e)
         {
-            if (sender is System.Windows.Controls.CheckBox checkbox && checkbox.Tag is FileSystemItem fsi)
+            if (sender is CheckBox { Tag: FileSystemItem fsi } checkbox)
             {
-                selectedItems.Remove(fsi);
+                selectedItems.Remove(fsi); // Triggers CollectionChanged -> UpdateStatusBarAndButtonStates
             }
-             // UpdateStatusBarAndButtonStates(); // Called by CollectionChanged
         }
 
-        private void ClearAllSelections()
+        /// <summary>
+        /// Clears the selection collection and unchecks corresponding checkboxes in the UI.
+        /// </summary>
+        private void ClearAllSelectionsUI()
         {
-            // Create a copy to avoid issues while modifying the collection
+            // Create a copy to avoid issues while modifying the collection being iterated indirectly
             var itemsToUncheck = selectedItems.ToList();
-            selectedItems.Clear(); // Clear the backing collection
+            selectedItems.Clear(); // Clear the backing collection (triggers update)
 
             // Uncheck the corresponding checkboxes in the UI
-            foreach(var item in itemsToUncheck)
+            foreach (var item in itemsToUncheck)
             {
                 if (pathToTreeViewItemMap.TryGetValue(item.Path, out var treeViewItem))
                 {
-                     if (treeViewItem.Header is StackPanel sp && sp.Children.Count > 0 && sp.Children[0] is System.Windows.Controls.CheckBox cb)
-                     {
-                         cb.IsChecked = false;
-                     }
+                    if (treeViewItem.Header is StackPanel sp && sp.Children.Count > 0 && sp.Children[0] is CheckBox cb)
+                    {
+                        cb.IsChecked = false; // Directly uncheck UI element
+                    }
                 }
             }
-             // UpdateStatusBarAndButtonStates(); // Called by CollectionChanged
+            // Status bar update is handled by selectedItems.Clear() via CollectionChanged
         }
 
 
-        // --- File Preview ---
+        // --- File Preview (UI Related) ---
 
-        private void ShowPreview(FileSystemItem fsi)
+        /// <summary>
+        /// Shows a preview of the selected file or directory information in the TextBox.
+        /// </summary>
+        private async Task ShowPreviewAsync(FileSystemItem fsi)
         {
-            if (fsi == null)
+            if (fsi.IsDirectory)
             {
-                txtFileContent.Text = string.Empty;
+                txtFileContent.Text = $"Directorio seleccionado: {fsi.Name}\n\nRuta: {fsi.Path}";
+                tabControlMain.SelectedIndex = 0; // Ensure preview tab is selected
                 return;
             }
 
-            if (fsi.IsDirectory)
+            if (FileHelper.IsTextFile(fsi.Path))
             {
-                 txtFileContent.Text = $"Directorio seleccionado: {fsi.Name}\n\nRuta: {fsi.Path}";
-                 return;
+                // Use service to read content
+                var (content, success) = await _fileSystemService.ReadTextFileContentAsync(fsi.Path);
+                txtFileContent.Text = content; // Display content or error message from service
             }
-
-            try
+            else if (FileHelper.IsImageFile(fsi.Path))
             {
-                if (IsTextFile(fsi.Path))
-                {
-                    // Basic check for very large files to avoid freezing UI on read
-                    var fileInfo = new FileInfo(fsi.Path);
-                    if (fileInfo.Length > 5 * 1024 * 1024) // 5 MB limit for preview
-                    {
-                         txtFileContent.Text = $"--- El archivo es demasiado grande para la vista previa ({fileInfo.Length / 1024.0 / 1024.0:F2} MB) ---";
-                    }
-                    else
-                    {
-                        string content = File.ReadAllText(fsi.Path);
-                        txtFileContent.Text = content;
-                    }
-                }
-                 else if (IsImageFile(fsi.Path)) // Basic image check (optional)
-                 {
-                     txtFileContent.Text = $"--- Vista previa de imagen no implementada ---\nArchivo: {fsi.Name}";
-                     // Could add an Image control here later
-                 }
-                else
-                {
-                    txtFileContent.Text = $"--- No se puede previsualizar este tipo de archivo ---\nTipo: {fsi.Type}\nRuta: {fsi.Path}";
-                }
-                tabControlMain.SelectedIndex = 0; // Switch to preview tab
-            }
-             catch (IOException ioEx) // More specific catch for file access issues
-             {
-                  txtFileContent.Text = $"Error de E/S al leer el archivo:\n{ioEx.Message}\n\nAsegúrese de que el archivo no esté en uso por otro programa.";
-                  Debug.WriteLine($"IO Error previewing {fsi.Path}: {ioEx}");
-             }
-            catch (Exception ex)
-            {
-                txtFileContent.Text = $"Error inesperado al leer el archivo:\n{ex.Message}";
-                 Debug.WriteLine($"Error previewing {fsi.Path}: {ex}");
-            }
-        }
-
-        private bool IsTextFile(string filePath)
-        {
-             if (string.IsNullOrEmpty(filePath)) return false;
-             string extension = Path.GetExtension(filePath); // Includes the dot "."
-             if (string.IsNullOrEmpty(extension)) return false; // File has no extension
-
-             // Handle files with no extension but common names like 'Dockerfile', 'LICENSE'
-             string fileName = Path.GetFileName(filePath);
-             if (fileName.Equals("Dockerfile", StringComparison.OrdinalIgnoreCase) ||
-                 fileName.Equals("LICENSE", StringComparison.OrdinalIgnoreCase) ||
-                  fileName.Equals("README", StringComparison.OrdinalIgnoreCase))
-             {
-                 return true;
-             }
-
-             return textFileExtensions.Contains(extension);
-        }
-
-        private bool IsImageFile(string filePath)
-        {
-            string extension = Path.GetExtension(filePath).ToLowerInvariant();
-            return extension switch {
-                ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".tiff" => true,
-                _ => false
-            };
-        }
-
-        // --- Button Actions ---
-
-        private void UpdateStatusBarAndButtonStates(string statusMessage = "")
-        {
-             // Update status bar text
-            if (!string.IsNullOrEmpty(statusMessage))
-            {
-                 statusBarText.Text = statusMessage;
-            }
-            else if (selectedItems.Count > 0)
-            {
-                 statusBarText.Text = $"{selectedItems.Count} elemento(s) seleccionado(s).";
+                txtFileContent.Text = $"--- Vista previa de imagen no implementada ---\nArchivo: {fsi.Name}";
+                // Future: Could add an Image control here and load the image
             }
             else
             {
-                 statusBarText.Text = "Listo.";
+                txtFileContent.Text = $"--- No se puede previsualizar este tipo de archivo ---\nTipo: {fsi.Type}\nRuta: {fsi.Path}";
+            }
+            tabControlMain.SelectedIndex = 0; // Switch to preview tab
+        }
+
+        // --- Button Actions / Command Handlers ---
+
+        private void UpdateStatusBarAndButtonStates(string statusMessage = "")
+        {
+            // Update status bar text
+            if (!string.IsNullOrEmpty(statusMessage))
+            {
+                statusBarText.Text = statusMessage;
+            }
+            else if (selectedItems.Count > 0)
+            {
+                statusBarText.Text = $"{selectedItems.Count} elemento(s) seleccionado(s).";
+            }
+            else
+            {
+                statusBarText.Text = "Listo.";
             }
 
-             // Update selection count
+            // Update selection count
             statusSelectionCount.Text = $"Seleccionados: {selectedItems.Count}";
 
-
-             // Update button states based on selection
+            // Update button states based on selection and clipboard
             bool hasSelection = selectedItems.Count > 0;
             bool hasSingleSelection = selectedItems.Count == 1;
-            bool canPaste = clipboardItems.Count > 0 && treeViewFiles.SelectedItem != null; // Can paste if something is copied and a target is selected
+            bool isDirectorySelected = (treeViewFiles.SelectedItem as TreeViewItem)?.Tag is FileSystemItem fsi && fsi.IsDirectory;
+            bool canPaste = clipboardItems.Count > 0 && treeViewFiles.SelectedItem != null; // Simplified: Can paste if *any* item is selected as target parent
 
-            // AI Copy Button: Enabled if any selected item is a text file OR a directory (because directories imply potential text files within)
-            bool canCopyText = hasSelection && selectedItems.Any(item => item.IsDirectory || IsTextFile(item.Path));
 
-             btnCopyText.IsEnabled = canCopyText;
-             btnCopy.IsEnabled = hasSelection;
-             btnCut.IsEnabled = hasSelection;
-             btnDelete.IsEnabled = hasSelection;
-             btnRename.IsEnabled = hasSingleSelection;
-             btnPaste.IsEnabled = canPaste;
-             btnClearSelection.IsEnabled = hasSelection;
+            // AI Copy Button: Enabled if any selected item is a text file OR a directory
+            bool canCopyText = hasSelection && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path));
 
-             // Update command CanExecute status (for keyboard shortcuts)
-             CommandManager.InvalidateRequerySuggested();
+            btnCopyText.IsEnabled = canCopyText;
+            btnCopy.IsEnabled = hasSelection;
+            btnCut.IsEnabled = hasSelection;
+            btnDelete.IsEnabled = hasSelection;
+            btnRename.IsEnabled = hasSingleSelection;
+            btnPaste.IsEnabled = canPaste;
+            btnClearSelection.IsEnabled = hasSelection;
+
+            // Ensure commands associated with buttons re-evaluate their CanExecute status
+            CommandManager.InvalidateRequerySuggested();
         }
 
         private void btnRefresh_Click(object sender, RoutedEventArgs e)
         {
-            if (!string.IsNullOrEmpty(rootPath) && Directory.Exists(rootPath))
+            if (!string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath))
             {
                 UpdateStatusBarAndButtonStates($"Refrescando: {rootPath}...");
-                 LoadDirectoryTree(rootPath);
-                 UpdateStatusBarAndButtonStates("Árbol refrescado.");
+                LoadDirectoryTreeUI(rootPath);
+                UpdateStatusBarAndButtonStates("Árbol refrescado.");
             }
             else
             {
-                System.Windows.MessageBox.Show("No hay una carpeta raíz seleccionada o válida para refrescar.", "Refrescar", MessageBoxButton.OK, MessageBoxImage.Information);
-                 UpdateStatusBarAndButtonStates("Seleccione una carpeta raíz.");
+                MessageBox.Show("No hay una carpeta raíz seleccionada o válida para refrescar.", "Refrescar", MessageBoxButton.OK, MessageBoxImage.Information);
+                UpdateStatusBarAndButtonStates("Seleccione una carpeta raíz.");
             }
         }
 
-        // --- AI Text Copy Action (Async) ---
+        // --- AI Text Copy Action (UI Coordination) ---
 
         private async void btnCopyText_Click(object sender, RoutedEventArgs e)
         {
             if (selectedItems.Count == 0)
             {
-                System.Windows.MessageBox.Show("No hay archivos o carpetas seleccionados.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("No hay archivos o carpetas seleccionados.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+            if (string.IsNullOrEmpty(rootPath))
+            {
+                 MessageBox.Show("No se ha establecido una carpeta raíz.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Error);
+                 return;
+            }
 
-            // Provide visual feedback for potentially long operation
-            this.Cursor = System.Windows.Input.Cursors.Wait;
+
+            this.Cursor = Cursors.Wait;
             statusBarText.Text = "Recopilando archivos de texto...";
             btnCopyText.IsEnabled = false; // Disable button during operation
 
-
             try
             {
-                // Use Task.Run to perform file searching and reading off the UI thread
-                var (fileMap, fileContents, textFileCount) = await Task.Run(() => CollectTextFilesAndContent());
+                // Use Task.Run for the potentially long-running service call
+                var result = await Task.Run(() => _aiCopyService.GenerateAiClipboardContentAsync(selectedItems, rootPath));
 
-                if (textFileCount == 0)
+                if (result == null)
                 {
-                    System.Windows.MessageBox.Show("No se encontraron archivos de texto válidos en la selección.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show("No se encontraron archivos de texto válidos en la selección.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
                     return; // Exit early
                 }
 
-                // Combine map and content
-                var resultBuilder = new StringBuilder();
-                resultBuilder.AppendLine("<file_map>");
-                resultBuilder.Append(fileMap); // Append generated map
-                resultBuilder.AppendLine("</file_map>");
-                resultBuilder.AppendLine();
-                resultBuilder.AppendLine("<file_contents>");
-                resultBuilder.Append(fileContents); // Append generated content
-                resultBuilder.AppendLine("</file_contents>");
-
                 // Copy to clipboard (must be done on UI thread)
-                System.Windows.Clipboard.SetText(resultBuilder.ToString());
+                Clipboard.SetText(result.Value.Output);
 
-                UpdateStatusBarAndButtonStates($"Contenido de {textFileCount} archivo(s) copiado al portapapeles.");
-                System.Windows.MessageBox.Show($"Se ha copiado el mapa y el contenido de {textFileCount} archivo(s) de texto al portapapeles.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
+                UpdateStatusBarAndButtonStates($"Contenido de {result.Value.TextFileCount} archivo(s) copiado al portapapeles.");
+                MessageBox.Show($"Se ha copiado el mapa y el contenido de {result.Value.TextFileCount} archivo(s) de texto al portapapeles.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
                 UpdateStatusBarAndButtonStates("Error al copiar texto.");
-                System.Windows.MessageBox.Show($"Error al preparar el texto para la IA:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Error al preparar el texto para la IA:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 Debug.WriteLine($"Error btnCopyText_Click: {ex}");
             }
             finally
             {
-                 // Restore cursor and re-enable button on UI thread
-                this.Cursor = System.Windows.Input.Cursors.Arrow;
-                btnCopyText.IsEnabled = true; // Re-enable based on current selection state
+                // Restore cursor and re-evaluate button state on UI thread
+                this.Cursor = Cursors.Arrow;
                 UpdateStatusBarAndButtonStates(); // Refresh button states potentially
             }
         }
 
-        private (StringBuilder fileMap, StringBuilder fileContents, int textFileCount) CollectTextFilesAndContent()
-        {
-             var allTextFiles = new List<FileSystemItem>();
 
-             // Recursively find all text files within selected items
-             foreach (var selectedItem in selectedItems)
-             {
-                 FindTextFilesRecursive(selectedItem, allTextFiles);
-             }
-
-             // Remove duplicates just in case (e.g., selecting a folder and a file within it)
-             var uniqueTextFiles = allTextFiles
-                 .DistinctBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
-                 .OrderBy(f => f.Path) // Sort for consistent output
-                 .ToList();
-
-             if (uniqueTextFiles.Count == 0)
-             {
-                 return (new StringBuilder(), new StringBuilder(), 0);
-             }
-
-             // Build the minimal file map based *only* on the found text files
-             var fileMapBuilder = BuildMinimalFileMapForFiles(uniqueTextFiles);
-
-             // Build the file contents section
-             var fileContentBuilder = new StringBuilder();
-             foreach (var textFile in uniqueTextFiles)
-             {
-                 try
-                 {
-                     string content = File.ReadAllText(textFile.Path);
-                     // Use Path.GetRelativePath for cleaner relative paths
-                     string relativePath = Path.GetRelativePath(rootPath!, textFile.Path); // rootPath should be non-null here
-
-                     fileContentBuilder.AppendLine($"File: {relativePath.Replace('\\', '/')}"); // Use forward slashes
-                     fileContentBuilder.AppendLine($"");
-                     fileContentBuilder.AppendLine(content);
-                     fileContentBuilder.AppendLine($""); // Extra newline for separation
-                     fileContentBuilder.AppendLine();
-                 }
-                 catch (Exception ex)
-                 {
-                     // Log error for specific file but continue with others
-                      string relativePath = Path.GetRelativePath(rootPath!, textFile.Path);
-                     fileContentBuilder.AppendLine($"File: {relativePath.Replace('\\', '/')}");
-                     fileContentBuilder.AppendLine($"");
-                     fileContentBuilder.AppendLine($"### Error reading file: {ex.Message} ###");
-                     fileContentBuilder.AppendLine($"");
-                     fileContentBuilder.AppendLine();
-                      Debug.WriteLine($"Error reading content for {textFile.Path}: {ex.Message}");
-                 }
-             }
-
-            return (fileMapBuilder, fileContentBuilder, uniqueTextFiles.Count);
-        }
-
-        // Recursive helper to find all text files starting from a selected item
-        private void FindTextFilesRecursive(FileSystemItem item, List<FileSystemItem> collectedFiles)
-        {
-            if (!item.IsDirectory)
-            {
-                if (IsTextFile(item.Path) && !collectedFiles.Any(f => f.Path.Equals(item.Path, StringComparison.OrdinalIgnoreCase)))
-                {
-                    collectedFiles.Add(item);
-                }
-                return; // Stop recursion if it's a file
-            }
-
-            // It's a directory, explore its contents
-            try
-            {
-                // Process files in the current directory
-                foreach (var fileInfo in new DirectoryInfo(item.Path).GetFiles().Where(f => IsTextFile(f.FullName)))
-                {
-                     var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false };
-                      if (!collectedFiles.Any(f => f.Path.Equals(fileFsi.Path, StringComparison.OrdinalIgnoreCase)))
-                      {
-                           collectedFiles.Add(fileFsi);
-                      }
-                }
-
-                // Process subdirectories recursively, respecting ignored list
-                foreach (var dirInfo in new DirectoryInfo(item.Path).GetDirectories())
-                {
-                     if (!ignoredFolderNames.Contains(dirInfo.Name))
-                     {
-                         var dirFsi = new FileSystemItem { Name = dirInfo.Name, Path = dirInfo.FullName, Type = "Directorio", IsDirectory = true };
-                         FindTextFilesRecursive(dirFsi, collectedFiles);
-                     }
-                }
-            }
-            catch (UnauthorizedAccessException)
-            {
-                 Debug.WriteLine($"Access denied during recursive text file search in: {item.Path}");
-                 // Skip this directory silently in the background task
-            }
-            catch (Exception ex)
-            {
-                 Debug.WriteLine($"Error during recursive text file search in {item.Path}: {ex.Message}");
-                // Log and continue if possible
-            }
-        }
-
-
-       // Builds the <file_map> structure based ONLY on the paths of the provided text files.
-        private StringBuilder BuildMinimalFileMapForFiles(List<FileSystemItem> textFiles)
-        {
-            var mapBuilder = new StringBuilder();
-            if (textFiles.Count == 0 || string.IsNullOrEmpty(rootPath)) return mapBuilder;
-
-            // Create a set of all directory paths required to reach the text files
-            var requiredDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var file in textFiles)
-            {
-                string? dir = Path.GetDirectoryName(file.Path);
-                while (dir != null && dir.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase) && dir.Length >= rootPath.Length)
-                {
-                    requiredDirs.Add(dir);
-                    if (dir.Equals(rootPath, StringComparison.OrdinalIgnoreCase)) break; // Stop at root
-                    dir = Path.GetDirectoryName(dir);
-                }
-            }
-             requiredDirs.Add(rootPath); // Ensure root is always included if files are present
-
-            // Group files by their directory
-            var dirToFileMap = textFiles.GroupBy(f => Path.GetDirectoryName(f.Path) ?? "")
-                                        .ToDictionary(g => g.Key, g => g.OrderBy(f => f.Name).ToList(), StringComparer.OrdinalIgnoreCase);
-
-            // Build the tree structure recursively
-            BuildMapRecursive(rootPath, 0, mapBuilder, requiredDirs, dirToFileMap);
-
-            return mapBuilder;
-        }
-
-        // Recursive helper for building the file map string
-        private void BuildMapRecursive(string currentDirPath, int level, StringBuilder builder, HashSet<string> requiredDirs, Dictionary<string, List<FileSystemItem>> dirToFileMap)
-        {
-            // Get relative path segment for display name
-            string displayName = level == 0 ? currentDirPath : Path.GetFileName(currentDirPath);
-            string indent = new string(' ', level * 2);
-            string prefix = level == 0 ? "" : "└── ";
-
-            builder.AppendLine($"{indent}{prefix}{displayName}");
-
-             try
-             {
-                 // Add relevant subdirectories first, sorted alphabetically
-                 var subDirs = Directory.GetDirectories(currentDirPath)
-                     .Where(d => requiredDirs.Contains(d)) // Only include dirs that are required (lead to a selected file)
-                     .OrderBy(d => d)
-                     .ToList();
-
-                 foreach (var subDir in subDirs)
-                 {
-                     BuildMapRecursive(subDir, level + 1, builder, requiredDirs, dirToFileMap);
-                 }
-
-                 // Add files in the current directory that were selected, sorted alphabetically
-                 if (dirToFileMap.TryGetValue(currentDirPath, out var filesInDir))
-                 {
-                     foreach (var file in filesInDir) // Already sorted when dictionary was created
-                     {
-                         builder.AppendLine($"{indent}  ├── {file.Name}");
-                     }
-                 }
-             }
-             catch (Exception ex)
-             {
-                  builder.AppendLine($"{indent}  [Error accessing: {ex.Message}]");
-                  Debug.WriteLine($"Error accessing directory {currentDirPath} during map build: {ex.Message}");
-             }
-        }
-
-
-        // --- Standard File Operations (Copy, Cut, Paste, Delete, Rename) ---
-        // These remain largely the same, but we update status bar and use clipboardItems
+        // --- Standard File Operations (UI Coordination) ---
 
         private void btnCopy_Click(object sender, RoutedEventArgs e)
         {
             if (selectedItems.Count == 0) return;
 
-            clipboardItems = selectedItems.ToList(); // Copy the list of selected items
+            clipboardItems = selectedItems.ToList(); // Store selected items for paste operation
             isCutOperation = false;
-            clipboardPath = null; // Clear single path clipboard concept
 
             UpdateStatusBarAndButtonStates($"Copiado(s) {clipboardItems.Count} elemento(s) al portapapeles.");
-            // No message box needed, status bar is enough
         }
 
         private void btnCut_Click(object sender, RoutedEventArgs e)
         {
-             if (selectedItems.Count == 0) return;
+            if (selectedItems.Count == 0) return;
 
             clipboardItems = selectedItems.ToList();
             isCutOperation = true;
-            clipboardPath = null;
 
             UpdateStatusBarAndButtonStates($"Cortado(s) {clipboardItems.Count} elemento(s) al portapapeles.");
-             // Optional: Visually indicate cut items (e.g., gray out in tree) - adds complexity
+            // Optional: Add visual cue for cut items (e.g., graying out TreeViewItem)
+            // ApplyCutVisuals();
         }
 
         private void btnPaste_Click(object sender, RoutedEventArgs e)
         {
             if (clipboardItems.Count == 0)
             {
-                System.Windows.MessageBox.Show("El portapapeles está vacío.", "Pegar", MessageBoxButton.OK, MessageBoxImage.Information);
-                 return;
+                MessageBox.Show("El portapapeles está vacío.", "Pegar", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
             }
             if (treeViewFiles.SelectedItem is not TreeViewItem selectedTreeViewItem || selectedTreeViewItem.Tag is not FileSystemItem targetFsi)
             {
-                System.Windows.MessageBox.Show("Seleccione un directorio destino válido en el árbol para pegar.", "Pegar", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Seleccione un directorio destino válido en el árbol para pegar.", "Pegar", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            string destinationPath;
-            // Determine destination directory: if selected item is a file, use its parent dir, otherwise use the dir itself
-            if (!targetFsi.IsDirectory)
-            {
-                destinationPath = Path.GetDirectoryName(targetFsi.Path);
-                 if (destinationPath == null)
-                 {
-                     System.Windows.MessageBox.Show($"No se pudo determinar el directorio destino desde '{targetFsi.Name}'.", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
-                     return;
-                 }
-            }
-            else
-            {
-                destinationPath = targetFsi.Path;
-            }
-
+            // Determine destination directory path
+            string destinationDir = targetFsi.IsDirectory ? targetFsi.Path : (_fileSystemService.GetDirectoryName(targetFsi.Path) ?? rootPath ?? "");
+             if(string.IsNullOrEmpty(destinationDir))
+             {
+                  MessageBox.Show($"No se pudo determinar el directorio destino.", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
+                  return;
+             }
 
             UpdateStatusBarAndButtonStates("Pegando elementos...");
-            this.Cursor = System.Windows.Input.Cursors.Wait;
+            this.Cursor = Cursors.Wait;
+            bool refreshNeeded = false;
+            string? refreshParentPath = null; // Track the parent where paste occurred
 
             try
             {
@@ -885,136 +612,97 @@ namespace MakingVibe
                 foreach (var itemToPaste in itemsToProcess)
                 {
                     string sourcePath = itemToPaste.Path;
-                    // Check if source still exists, especially for Cut operations
-                    if ((itemToPaste.IsDirectory && !Directory.Exists(sourcePath)) || (!itemToPaste.IsDirectory && !File.Exists(sourcePath)))
+                    string targetName = _fileSystemService.GetFileName(sourcePath);
+                    string fullTargetPath = _fileSystemService.CombinePath(destinationDir, targetName);
+
+                    // Basic checks
+                    if (string.Equals(sourcePath, fullTargetPath, StringComparison.OrdinalIgnoreCase)) continue; // Pasting onto itself
+                    if ((itemToPaste.IsDirectory && !_fileSystemService.DirectoryExists(sourcePath)) || (!itemToPaste.IsDirectory && !_fileSystemService.FileExists(sourcePath)))
                     {
-                         Debug.WriteLine($"Source path not found for paste: {sourcePath}");
-                         continue; // Skip if source is gone
+                        Debug.WriteLine($"Source path not found for paste: {sourcePath}"); continue; // Source gone
                     }
+                     if (itemToPaste.IsDirectory && destinationDir.StartsWith(sourcePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                     {
+                         MessageBox.Show($"No se puede {(isCutOperation ? "mover" : "copiar")} la carpeta '{itemToPaste.Name}' dentro de sí misma o de una subcarpeta.", "Operación Inválida", MessageBoxButton.OK, MessageBoxImage.Warning); continue;
+                     }
 
-                    string targetName = Path.GetFileName(sourcePath);
-                    string fullTargetPath = Path.Combine(destinationPath, targetName);
 
-                    // Prevent copying/moving item into itself
-                    if (itemToPaste.IsDirectory && destinationPath.StartsWith(sourcePath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        System.Windows.MessageBox.Show($"No se puede { (isCutOperation ? "mover" : "copiar") } la carpeta '{itemToPaste.Name}' dentro de sí misma.", "Operación Inválida", MessageBoxButton.OK, MessageBoxImage.Warning);
-                         continue;
-                    }
-
-                    // Handle potential naming conflicts (simple overwrite warning or rename prompt - adding simple overwrite here)
-                    bool targetExists = itemToPaste.IsDirectory ? Directory.Exists(fullTargetPath) : File.Exists(fullTargetPath);
+                    // Handle conflicts
+                    bool targetExists = itemToPaste.IsDirectory ? _fileSystemService.DirectoryExists(fullTargetPath) : _fileSystemService.FileExists(fullTargetPath);
                     if (targetExists)
                     {
-                         var overwriteResult = System.Windows.MessageBox.Show($"El elemento '{targetName}' ya existe en el destino.\n¿Desea sobrescribirlo?", "Conflicto al Pegar", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                         if (overwriteResult == MessageBoxResult.No)
-                         {
-                             continue; // Skip this item
-                         }
-                         // If Yes, delete existing target first
-                         try
-                         {
-                              if (itemToPaste.IsDirectory) Directory.Delete(fullTargetPath, true);
-                              else File.Delete(fullTargetPath);
-                         }
-                         catch(Exception delEx)
-                         {
-                             System.Windows.MessageBox.Show($"No se pudo sobrescribir '{targetName}'. Error: {delEx.Message}", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
-                              continue;
-                         }
+                        var overwriteResult = MessageBox.Show($"El elemento '{targetName}' ya existe en el destino.\n¿Desea sobrescribirlo?", "Conflicto al Pegar", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                        if (overwriteResult == MessageBoxResult.No) continue; // Skip
+
+                        // Try deleting existing target
+                        try
+                        {
+                            var targetToDeleteFsi = new FileSystemItem { Name = targetName, Path = fullTargetPath, Type = "", IsDirectory = itemToPaste.IsDirectory };
+                            _fileSystemService.DeleteItem(targetToDeleteFsi);
+                        }
+                        catch (Exception delEx)
+                        {
+                            MessageBox.Show($"No se pudo sobrescribir '{targetName}'. Error: {delEx.Message}", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error); continue;
+                        }
                     }
 
-
+                    // Perform Copy/Move using the service
                     try
                     {
-                         if (itemToPaste.IsDirectory)
-                         {
-                             // Use custom CopyDirectory for better control or switch to FileSystem.MoveDirectory/CopyDirectory if using Microsoft.VisualBasic assembly
-                             if (isCutOperation)
-                             {
-                                 Directory.Move(sourcePath, fullTargetPath); // Move directory
-                             }
-                             else
-                             {
-                                 CopyDirectory(sourcePath, fullTargetPath); // Copy directory
-                             }
-                         }
-                         else // It's a file
-                         {
-                             if (isCutOperation)
-                             {
-                                 File.Move(sourcePath, fullTargetPath); // Move file
-                             }
-                             else
-                             {
-                                 File.Copy(sourcePath, fullTargetPath, true); // Copy file (overwrite true, though we handled conflict above)
-                             }
-                         }
-                         pasteCount++;
+                        if (isCutOperation)
+                        {
+                             _fileSystemService.MoveItem(sourcePath, fullTargetPath, itemToPaste.IsDirectory);
+                        }
+                        else
+                        {
+                            _fileSystemService.CopyItem(sourcePath, fullTargetPath, itemToPaste.IsDirectory);
+                        }
+                        pasteCount++;
+                        refreshNeeded = true; // Mark that UI refresh is needed
+                        refreshParentPath = destinationDir; // Target directory needs refresh
                     }
                     catch (Exception opEx)
                     {
-                        System.Windows.MessageBox.Show($"Error al {(isCutOperation ? "mover" : "copiar")} '{itemToPaste.Name}':\n{opEx.Message}", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
-                          // Decide whether to continue with other items or stop
-                          break; // Stop on first error for simplicity
+                        MessageBox.Show($"Error al {(isCutOperation ? "mover" : "copiar")} '{itemToPaste.Name}':\n{opEx.Message}", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
+                         // Consider breaking or continuing based on requirements
+                         break; // Stop on first error
                     }
-                } // end foreach itemToPaste
+                } // end foreach
 
-
-                 // Clear clipboard if Cut operation was successful for all items moved
-                if (isCutOperation)
+                // Clear clipboard only if Cut was successful and items were processed
+                if (isCutOperation && pasteCount > 0) // Check pasteCount > 0 to avoid clearing if all failed
                 {
                     clipboardItems.Clear();
-                    clipboardPath = null;
-                    isCutOperation = false; // Reset operation type
+                    isCutOperation = false;
+                     // Optional: Remove visual cue for cut items
+                     // RemoveCutVisuals();
                 }
 
-                // Refresh the parent node where items were pasted
-                if (pathToTreeViewItemMap.TryGetValue(destinationPath, out var parentNode))
+                // Refresh UI if changes were made
+                if (refreshNeeded && refreshParentPath != null)
                 {
-                     parentNode.Items.Clear(); // Clear children
-                     LoadChildren(parentNode, destinationPath); // Reload
-                     parentNode.IsExpanded = true; // Ensure it's visible
-                }
-                else {
-                     LoadDirectoryTree(rootPath); // Fallback to full refresh if parent node not found easily
+                    if (pathToTreeViewItemMap.TryGetValue(refreshParentPath, out var parentNode))
+                    {
+                        RefreshNodeUI(parentNode, (FileSystemItem)parentNode.Tag); // Refresh the parent node
+                    }
+                    else {
+                         LoadDirectoryTreeUI(rootPath!); // Fallback to full refresh
+                    }
                 }
 
-
-                UpdateStatusBarAndButtonStates($"{pasteCount} elemento(s) pegado(s) en '{Path.GetFileName(destinationPath)}'.");
+                 UpdateStatusBarAndButtonStates($"{pasteCount} elemento(s) pegado(s) en '{_fileSystemService.GetFileName(destinationDir)}'.");
             }
             catch (Exception ex)
             {
-                System.Windows.MessageBox.Show($"Error inesperado durante la operación de pegado:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Error inesperado durante la operación de pegado:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 UpdateStatusBarAndButtonStates("Error al pegar.");
+                // Consider full refresh on major error
+                 if(!string.IsNullOrEmpty(rootPath)) LoadDirectoryTreeUI(rootPath);
             }
             finally
             {
-                 this.Cursor = System.Windows.Input.Cursors.Arrow;
-                 UpdateStatusBarAndButtonStates(); // Update buttons etc.
-            }
-        }
-
-
-        // Helper to copy directory contents recursively
-        private void CopyDirectory(string sourceDir, string destDir)
-        {
-            Directory.CreateDirectory(destDir);
-
-            foreach (string file in Directory.GetFiles(sourceDir))
-            {
-                string destFile = Path.Combine(destDir, Path.GetFileName(file));
-                File.Copy(file, destFile, true); // Overwrite if exists (conflict handled before calling)
-            }
-
-            foreach (string subDir in Directory.GetDirectories(sourceDir))
-            {
-                // Skip ignored directories during copy as well
-                if (!ignoredFolderNames.Contains(Path.GetFileName(subDir)))
-                {
-                    string destSubDir = Path.Combine(destDir, Path.GetFileName(subDir));
-                    CopyDirectory(subDir, destSubDir);
-                }
+                this.Cursor = Cursors.Arrow;
+                UpdateStatusBarAndButtonStates(); // Update buttons etc.
             }
         }
 
@@ -1027,13 +715,13 @@ namespace MakingVibe
                 ? $"¿Está seguro de que desea eliminar '{selectedItems.First().Name}'?"
                 : $"¿Está seguro de que desea eliminar {selectedItems.Count} elementos seleccionados?";
 
-             // Ask for confirmation
-            if (System.Windows.MessageBox.Show(message, "Confirmar Eliminación", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+            if (MessageBox.Show(message, "Confirmar Eliminación", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
             {
                 UpdateStatusBarAndButtonStates("Eliminando...");
-                this.Cursor = System.Windows.Input.Cursors.Wait;
+                this.Cursor = Cursors.Wait;
                 int deleteCount = 0;
                 var itemsToDelete = selectedItems.ToList(); // Process a copy
+                var parentPathsToRefresh = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 try
                 {
@@ -1041,47 +729,61 @@ namespace MakingVibe
                     {
                         try
                         {
-                            if (item.IsDirectory)
-                            {
-                                if (Directory.Exists(item.Path))
-                                    Directory.Delete(item.Path, true); // Recursive delete
-                            }
-                            else
-                            {
-                                if (File.Exists(item.Path))
-                                    File.Delete(item.Path);
-                            }
+                            string? parentPath = _fileSystemService.GetDirectoryName(item.Path);
+                            _fileSystemService.DeleteItem(item); // Use service
 
-                            // Remove from selection and map *after* successful deletion
+                            // Remove from selection *after* successful deletion
+                            // Note: Removing from selectedItems automatically triggers status update
                             selectedItems.Remove(item);
-                            pathToTreeViewItemMap.Remove(item.Path);
+
+                            // Remove from map
+                             pathToTreeViewItemMap.Remove(item.Path); // Remove the item itself
+
+                            // Mark parent for refresh
+                            if (parentPath != null) parentPathsToRefresh.Add(parentPath);
+
                             deleteCount++;
                         }
                         catch (Exception itemEx)
                         {
-                            System.Windows.MessageBox.Show($"No se pudo eliminar '{item.Name}'.\nError: {itemEx.Message}\n\nAsegúrese de que no esté en uso.", "Error al Eliminar", MessageBoxButton.OK, MessageBoxImage.Error);
-                             // Optionally break or continue
-                             // break;
+                            MessageBox.Show($"No se pudo eliminar '{item.Name}'.\nError: {itemEx.Message}\n\nAsegúrese de que no esté en uso.", "Error al Eliminar", MessageBoxButton.OK, MessageBoxImage.Error);
+                            // Decide whether to continue or break
                         }
                     }
 
-                     // Refresh UI - More efficient to remove nodes directly if possible
-                     // Find parent nodes of deleted items and refresh them, or just reload the whole tree if simpler
-                     LoadDirectoryTree(rootPath); // Simple full refresh after deletion
+                    // Refresh parent nodes in the UI
+                    if(parentPathsToRefresh.Any())
+                    {
+                        foreach(var parentPath in parentPathsToRefresh)
+                        {
+                            if (pathToTreeViewItemMap.TryGetValue(parentPath, out var parentNode))
+                            {
+                                RefreshNodeUI(parentNode, (FileSystemItem)parentNode.Tag);
+                            } else if(string.Equals(parentPath, rootPath, StringComparison.OrdinalIgnoreCase)) {
+                                // If parent was root and root node wasn't found (edge case), refresh all
+                                if(!string.IsNullOrEmpty(rootPath)) LoadDirectoryTreeUI(rootPath);
+                            }
+                        }
+                    }
+                    else if (deleteCount > 0 && !string.IsNullOrEmpty(rootPath)) {
+                         // Fallback refresh if parents weren't found but items were deleted
+                         LoadDirectoryTreeUI(rootPath);
+                    }
 
-                     UpdateStatusBarAndButtonStates($"{deleteCount} elemento(s) eliminado(s).");
-                 }
-                 catch (Exception ex) // Catch unexpected errors during the loop or refresh
-                 {
-                     System.Windows.MessageBox.Show($"Error inesperado durante la eliminación: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                     UpdateStatusBarAndButtonStates("Error al eliminar.");
-                     LoadDirectoryTree(rootPath); // Try to refresh to consistent state
-                 }
-                 finally
-                 {
-                    this.Cursor = System.Windows.Input.Cursors.Arrow;
-                     UpdateStatusBarAndButtonStates(); // Update button states
-                 }
+
+                    UpdateStatusBarAndButtonStates($"{deleteCount} elemento(s) eliminado(s)."); // Update status bar
+                }
+                catch (Exception ex) // Catch unexpected errors during the loop or refresh
+                {
+                    MessageBox.Show($"Error inesperado durante la eliminación: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    UpdateStatusBarAndButtonStates("Error al eliminar.");
+                    if(!string.IsNullOrEmpty(rootPath)) LoadDirectoryTreeUI(rootPath); // Try to refresh to consistent state
+                }
+                finally
+                {
+                    this.Cursor = Cursors.Arrow;
+                    // UpdateStatusBarAndButtonStates(); // Status update already happens via selectedItems.Remove
+                }
             }
         }
 
@@ -1090,231 +792,104 @@ namespace MakingVibe
             if (selectedItems.Count != 1) return;
 
             var itemToRename = selectedItems[0];
-            string oldName = itemToRename.Name;
             string oldPath = itemToRename.Path;
-            string? directory = Path.GetDirectoryName(oldPath);
+            string? directory = _fileSystemService.GetDirectoryName(oldPath);
 
             if (directory == null)
             {
-                System.Windows.MessageBox.Show("No se puede determinar el directorio del elemento a renombrar.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                 return;
+                MessageBox.Show("No se puede determinar el directorio del elemento a renombrar.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
             }
 
-            var dialog = new RenameDialog(oldName);
-            dialog.Owner = this; // Set owner for proper dialog behavior
+            // Use the existing RenameDialog
+            var dialog = new RenameDialog(itemToRename.Name) { Owner = this };
 
             if (dialog.ShowDialog() == true)
             {
-                string newName = dialog.NewName.Trim();
+                string newName = dialog.NewName; // Assumes dialog validates emptiness and invalid chars
 
-                // Basic validation
-                if (string.IsNullOrWhiteSpace(newName))
+                if (newName.Equals(itemToRename.Name, StringComparison.Ordinal)) return; // Name didn't change
+
+                string newPath = _fileSystemService.CombinePath(directory, newName);
+
+                // Check if new name already exists using FileSystemService
+                if ((itemToRename.IsDirectory && _fileSystemService.DirectoryExists(newPath)) || (!itemToRename.IsDirectory && _fileSystemService.FileExists(newPath)))
                 {
-                    System.Windows.MessageBox.Show("El nombre no puede estar vacío.", "Nombre Inválido", MessageBoxButton.OK, MessageBoxImage.Warning);
-                     return;
-                }
-                if (newName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-                {
-                    System.Windows.MessageBox.Show("El nombre contiene caracteres no válidos.", "Nombre Inválido", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show($"Ya existe un elemento llamado '{newName}' en esta ubicación.", "Renombrar Fallido", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
-                 if (newName.Equals(oldName, StringComparison.Ordinal)) // Use Ordinal for case-sensitive check if needed, else OrdinalIgnoreCase
-                 {
-                     // Name didn't change
-                     return;
-                 }
 
-
-                string newPath = Path.Combine(directory, newName);
-
-                // Check if new name already exists
-                if ((itemToRename.IsDirectory && Directory.Exists(newPath)) || (!itemToRename.IsDirectory && File.Exists(newPath)))
-                {
-                    System.Windows.MessageBox.Show($"Ya existe un elemento llamado '{newName}' en esta ubicación.", "Renombrar Fallido", MessageBoxButton.OK, MessageBoxImage.Warning);
-                     return;
-                }
-
-
-                UpdateStatusBarAndButtonStates($"Renombrando '{oldName}'...");
-                this.Cursor = System.Windows.Input.Cursors.Wait;
+                UpdateStatusBarAndButtonStates($"Renombrando '{itemToRename.Name}'...");
+                this.Cursor = Cursors.Wait;
 
                 try
                 {
-                    if (itemToRename.IsDirectory)
-                    {
-                        Directory.Move(oldPath, newPath);
-                    }
-                    else
-                    {
-                        File.Move(oldPath, newPath);
-                    }
+                    // Perform rename using the service
+                    _fileSystemService.RenameItem(oldPath, newPath, itemToRename.IsDirectory);
 
-                     // Update the item in the selection list *if* it was selected
+                    // Update the FileSystemItem in memory (important!)
+                    string oldName = itemToRename.Name; // Store old name for status message
                     itemToRename.Name = newName;
                     itemToRename.Path = newPath;
 
-                     // Refresh the parent node in the tree view
-                    if (pathToTreeViewItemMap.TryGetValue(directory, out var parentNode))
-                    {
-                         parentNode.Items.Clear();
-                         LoadChildren(parentNode, directory);
-                         parentNode.IsExpanded = true; // Keep it expanded
-                    }
-                    else
-                    {
-                         LoadDirectoryTree(rootPath); // Fallback refresh
-                    }
 
-                     // Update maps (remove old, add new)
-                     if(pathToTreeViewItemMap.Remove(oldPath, out var oldTvi))
+                    // Refresh the parent node in the tree view UI
+                     if (pathToTreeViewItemMap.TryGetValue(directory, out var parentNode))
                      {
-                         // If the renamed item is visible (i.e., parent was expanded), update its TreeViewItem
-                         if(pathToTreeViewItemMap.ContainsKey(newPath)) // Should exist after reload
-                         {
-                             var newTvi = pathToTreeViewItemMap[newPath];
-                             // Potentially re-select the renamed item
-                             newTvi.IsSelected = true;
-                         }
+                         // Refresh the parent node which will re-create the child item UI
+                         RefreshNodeUI(parentNode, (FileSystemItem)parentNode.Tag);
+
+                         // Optionally try to re-select the renamed item visually
+                          Dispatcher.InvokeAsync(() => { // Ensure UI update happens after refresh
+                             if(pathToTreeViewItemMap.TryGetValue(newPath, out var newTvi))
+                             {
+                                 newTvi.IsSelected = true;
+                             }
+                         }, System.Windows.Threading.DispatcherPriority.Background);
+
                      }
+                     else
+                     {
+                          if(!string.IsNullOrEmpty(rootPath)) LoadDirectoryTreeUI(rootPath); // Fallback refresh
+                     }
+
+                    // Update the main path-to-item map (remove old, new one added during refresh)
+                    pathToTreeViewItemMap.Remove(oldPath);
 
 
                     UpdateStatusBarAndButtonStates($"'{oldName}' renombrado a '{newName}'.");
-                    System.Windows.MessageBox.Show("Elemento renombrado con éxito.", "Renombrar", MessageBoxButton.OK, MessageBoxImage.Information);
+                    // No need for success message box? Status bar is enough.
+                    // MessageBox.Show("Elemento renombrado con éxito.", "Renombrar", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 catch (Exception ex)
                 {
-                    System.Windows.MessageBox.Show($"Error al renombrar '{oldName}':\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    UpdateStatusBarAndButtonStates($"Error al renombrar '{oldName}'.");
-                     LoadDirectoryTree(rootPath); // Refresh to undo partial changes visually
+                    MessageBox.Show($"Error al renombrar '{itemToRename.Name}':\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    UpdateStatusBarAndButtonStates($"Error al renombrar '{itemToRename.Name}'.");
+                    // Refresh parent or whole tree to ensure consistency after error
+                     if (pathToTreeViewItemMap.TryGetValue(directory, out var parentNode))
+                     {
+                         RefreshNodeUI(parentNode, (FileSystemItem)parentNode.Tag);
+                     } else if(!string.IsNullOrEmpty(rootPath)){
+                         LoadDirectoryTreeUI(rootPath);
+                     }
                 }
                 finally
                 {
-                     this.Cursor = System.Windows.Input.Cursors.Arrow;
-                      UpdateStatusBarAndButtonStates(); // Update buttons etc.
+                    this.Cursor = Cursors.Arrow;
+                    UpdateStatusBarAndButtonStates(); // Update buttons etc.
                 }
             }
         }
 
 
-        // --- Git Integration (Minor Change: Added Null Check) ---
+        // --- Git Integration (using GitService) ---
         private void SetWindowTitleFromGit()
         {
-            string? commitSubject = GetLastCommitSubject(); // Can return null
-            if (!string.IsNullOrEmpty(commitSubject))
-            {
-                this.Title = $"MakingVibe - {commitSubject}";
-            }
-            else
-            {
-                this.Title = "MakingVibe - (Commit info unavailable)";
-            }
-        }
-
-        private string? GetLastCommitSubject() // Return nullable string
-        {
-            string? repoPath = FindGitRepositoryRoot(AppDomain.CurrentDomain.BaseDirectory);
-            if (repoPath == null)
-            {
-                Debug.WriteLine("Git repository root not found.");
-                return null;
-            }
-
-            try
-            {
-                 // Assumes git is in PATH
-                ProcessStartInfo startInfo = new ProcessStartInfo("git", "log -1 --pretty=%s")
-                {
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    CreateNoWindow = true,
-                    WorkingDirectory = repoPath // Use found repo root
-                };
-
-                 using Process? process = Process.Start(startInfo); // Process can be null
-                 if (process == null) {
-                     Debug.WriteLine("Failed to start git process.");
-                     return null;
-                 }
-
-                 string output = process.StandardOutput.ReadToEnd(); // Read output first
-                 process.WaitForExit(); // Then wait
-
-                 if (process.ExitCode == 0)
-                 {
-                     return output.Trim();
-                 }
-                 else
-                 {
-                      Debug.WriteLine($"Git command failed with exit code {process.ExitCode}");
-                      return null;
-                 }
-            }
-            catch (Win32Exception) // Catch if 'git' command is not found
-            {
-                 Debug.WriteLine("Error running git command. Is git installed and in PATH?");
-                 return null;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Error getting git commit info: {ex.Message}");
-                return null;
-            }
-        }
-
-         // Helper to find the .git directory upwards from a starting path
-        private string? FindGitRepositoryRoot(string startingPath)
-        {
-            DirectoryInfo? currentDir = new DirectoryInfo(startingPath);
-            while (currentDir != null)
-            {
-                if (Directory.Exists(Path.Combine(currentDir.FullName, ".git")))
-                {
-                    return currentDir.FullName;
-                }
-                currentDir = currentDir.Parent;
-            }
-            return null; // Not found
+            string? commitSubject = _gitService.GetLastCommitSubject();
+            this.Title = !string.IsNullOrEmpty(commitSubject)
+                ? $"MakingVibe - {commitSubject}"
+                : "MakingVibe - (Commit info unavailable)";
         }
 
     } // End class MainWindow
-
-    // Class to represent a file system item (file or directory)
-    // Keep it simple, no INotifyPropertyChanged unless needed for ListView binding
-    public class FileSystemItem : IEquatable<FileSystemItem>
-    {
-        public required string Name { get; set; }
-        public required string Path { get; set; }
-        public required string Type { get; set; }
-        public bool IsDirectory { get; set; }
-
-        // Implement IEquatable for correct functioning in collections like HashSet or Distinct()
-        public bool Equals(FileSystemItem? other)
-        {
-            if (other is null) return false;
-            if (ReferenceEquals(this, other)) return true;
-            // Compare by Path for uniqueness
-            return string.Equals(Path, other.Path, StringComparison.OrdinalIgnoreCase);
-        }
-
-        public override bool Equals(object? obj)
-        {
-            return Equals(obj as FileSystemItem);
-        }
-
-        public override int GetHashCode()
-        {
-            // Use Path's hash code (case-insensitive)
-            return StringComparer.OrdinalIgnoreCase.GetHashCode(Path ?? string.Empty);
-        }
-
-        public static bool operator ==(FileSystemItem? left, FileSystemItem? right)
-        {
-            return Equals(left, right);
-        }
-
-        public static bool operator !=(FileSystemItem? left, FileSystemItem? right)
-        {
-            return !Equals(left, right);
-        }
-    }
 } // End namespace MakingVibe
