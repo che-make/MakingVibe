@@ -1,16 +1,20 @@
 ﻿// MakingVibe/Models/TextFragment.cs
-using System.Text.Json.Serialization; // Required for ignoring properties during serialization if needed in future
+using System.Text.Json.Serialization;
 
 namespace MakingVibe.Models
 {
     public class TextFragment
     {
+        // Title for display and identification in the list
+        public required string Title { get; set; }
+
+        // The actual text content of the fragment
         public required string Text { get; set; }
 
-        // Optional: Override ToString for easier debugging or simple display if needed
+        // Update ToString to show the title for easier debugging
         public override string ToString()
         {
-            return Text ?? string.Empty;
+            return Title ?? "[No Title]";
         }
     }
 }

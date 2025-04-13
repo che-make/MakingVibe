@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text; // Required for Encoding
 using System.Threading.Tasks;
 
 namespace MakingVibe.Services
@@ -24,11 +25,8 @@ namespace MakingVibe.Services
             // Add any other folders you commonly want to ignore for selection purposes
         };
 
-        // Consider making ignored folders configurable if needed
-        // public FileSystemService(IEnumerable<string> ignoredFolders)
-        // {
-        //     _ignoredFolderNames = new HashSet<string>(ignoredFolders, StringComparer.OrdinalIgnoreCase);
-        // }
+        // Maximum file size in bytes to attempt line counting to avoid performance issues
+        private const long MaxFileSizeForLineCount = 10 * 1024 * 1024; // 10 MB
 
         public bool DirectoryExists(string path) => Directory.Exists(path);
         public bool FileExists(string path) => File.Exists(path);
@@ -38,6 +36,7 @@ namespace MakingVibe.Services
 
         /// <summary>
         /// Gets the direct children (files and directories) of a given directory path, filtering ignored items.
+        /// Calculates line counts for text files within the size limit.
         /// </summary>
         /// <param name="directoryPath">The path of the directory to load.</param>
         /// <returns>An enumerable of FileSystemItem representing the children, or null if access is denied.</returns>
@@ -55,16 +54,30 @@ namespace MakingVibe.Services
 
                 foreach (var dirInfo in directories)
                 {
-                    children.Add(new FileSystemItem { Name = dirInfo.Name, Path = dirInfo.FullName, Type = "Directorio", IsDirectory = true });
+                    children.Add(new FileSystemItem { Name = dirInfo.Name, Path = dirInfo.FullName, Type = "Directorio", IsDirectory = true, LineCount = null }); // Directories have null LineCount
                 }
 
-                // Get files, sort, and add
+                // Get files, sort, calculate line count (if applicable), and add
                 var files = dirInfoRoot.GetFiles() // Use DirectoryInfo method
                                     .OrderBy(f => f.Name);
 
                 foreach (var fileInfo in files)
                 {
-                    children.Add(new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false });
+                    int? lineCount = null;
+                    // Calculate line count only for text files within the size limit
+                    if (FileHelper.IsTextFile(fileInfo.FullName) && fileInfo.Length <= MaxFileSizeForLineCount)
+                    {
+                        lineCount = GetLineCount(fileInfo.FullName);
+                    }
+                     // else: lineCount remains null for non-text files or large files
+
+                    children.Add(new FileSystemItem {
+                        Name = fileInfo.Name,
+                        Path = fileInfo.FullName,
+                        Type = fileInfo.Extension,
+                        IsDirectory = false,
+                        LineCount = lineCount // Set the calculated or null line count
+                    });
                 }
                 return children;
             }
@@ -97,7 +110,9 @@ namespace MakingVibe.Services
                     return ($"--- El archivo es demasiado grande para la vista previa ({fileInfo.Length / 1024.0 / 1024.0:F2} MB) ---", false);
                 }
 
-                string content = await File.ReadAllTextAsync(filePath);
+                // Use StreamReader to detect encoding
+                using var reader = new StreamReader(filePath, Encoding.UTF8, true); // Detect encoding from BOM, default UTF8
+                string content = await reader.ReadToEndAsync();
                 return (content, true);
             }
             catch (IOException ioEx)
@@ -105,12 +120,54 @@ namespace MakingVibe.Services
                 Debug.WriteLine($"IO Error reading {filePath}: {ioEx}");
                 return ($"Error de E/S al leer el archivo:\n{ioEx.Message}\n\nAsegúrese de que el archivo no esté en uso.", false);
             }
+             catch (UnauthorizedAccessException uaEx)
+             {
+                 Debug.WriteLine($"Access Denied reading {filePath}: {uaEx}");
+                 return ($"Acceso denegado al leer el archivo:\n{uaEx.Message}", false);
+             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Error reading {filePath}: {ex}");
                 return ($"Error inesperado al leer el archivo:\n{ex.Message}", false);
             }
         }
+
+         /// <summary>
+        /// Counts the number of lines in a file efficiently.
+        /// </summary>
+        /// <param name="filePath">The path to the file.</param>
+        /// <returns>The number of lines, or null if an error occurs or file is empty.</returns>
+        private int? GetLineCount(string filePath)
+        {
+            int count = 0;
+            try
+            {
+                 // Use StreamReader for efficient line reading and encoding detection
+                 using var reader = new StreamReader(filePath, Encoding.UTF8, true); // Detect BOM, default UTF8
+                 while (reader.ReadLine() != null)
+                 {
+                     count++;
+                 }
+                 // Return count > 0 ? count : null; // Return null if file is empty (0 lines)? Or return 0? Let's return 0 for empty files.
+                 return count;
+            }
+            catch (IOException ioEx)
+            {
+                 Debug.WriteLine($"IO Error counting lines in {filePath}: {ioEx.Message}");
+                 return null; // Indicate error
+            }
+            catch (UnauthorizedAccessException uaEx)
+            {
+                 Debug.WriteLine($"Access Denied counting lines in {filePath}: {uaEx.Message}");
+                 return null; // Indicate error
+            }
+            catch (Exception ex) // Catch other potential errors
+            {
+                Debug.WriteLine($"Error counting lines in {filePath}: {ex.Message}");
+                return null; // Indicate error
+            }
+        }
+
 
         /// <summary>
         /// Deletes a file or directory.
@@ -214,6 +271,8 @@ namespace MakingVibe.Services
                 // Check if it's a text file and not already added
                 if (FileHelper.IsTextFile(startItem.Path) && !collectedFiles.Any(f => f.Path.Equals(startItem.Path, StringComparison.OrdinalIgnoreCase)))
                 {
+                     // Note: We don't recalculate line count here as it was done when the item was initially loaded.
+                     // We trust the LineCount property of the passed 'startItem'.
                     collectedFiles.Add(startItem);
                 }
                 return; // Stop recursion if it's a file
@@ -227,7 +286,15 @@ namespace MakingVibe.Services
                 // Process files in the current directory
                 foreach (var fileInfo in dirInfo.GetFiles().Where(f => FileHelper.IsTextFile(f.FullName)))
                 {
-                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false };
+                    // Get line count (could be pre-calculated if we passed a dictionary, but let's recalculate if needed or use a placeholder)
+                    // For simplicity here, we'll just create the FSI again. The caller (AI Copy) primarily needs the path.
+                     int? lineCount = null;
+                     if (fileInfo.Length <= MaxFileSizeForLineCount) // Check size limit again
+                     {
+                         lineCount = GetLineCount(fileInfo.FullName); // Recalculate if needed, or could optimize later
+                     }
+
+                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false, LineCount = lineCount };
                     // Check if not already added
                     if (!collectedFiles.Any(f => f.Path.Equals(fileFsi.Path, StringComparison.OrdinalIgnoreCase)))
                     {
@@ -240,7 +307,8 @@ namespace MakingVibe.Services
                 {
                     if (!_ignoredFolderNames.Contains(subDirInfo.Name))
                     {
-                        var dirFsi = new FileSystemItem { Name = subDirInfo.Name, Path = subDirInfo.FullName, Type = "Directorio", IsDirectory = true };
+                        // Pass LineCount = null for directories
+                        var dirFsi = new FileSystemItem { Name = subDirInfo.Name, Path = subDirInfo.FullName, Type = "Directorio", IsDirectory = true, LineCount = null };
                         FindTextFilesRecursive(dirFsi, collectedFiles, rootPath); // Pass rootPath down
                     }
                 }
@@ -278,7 +346,14 @@ namespace MakingVibe.Services
                 // Add files in the current directory
                 foreach (var fileInfo in dirInfo.GetFiles())
                 {
-                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false };
+                    // Get line count if applicable
+                     int? lineCount = null;
+                    if (FileHelper.IsTextFile(fileInfo.FullName) && fileInfo.Length <= MaxFileSizeForLineCount)
+                    {
+                        lineCount = GetLineCount(fileInfo.FullName);
+                    }
+
+                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false, LineCount = lineCount };
                     // Use Path equality for uniqueness check within this specific operation run
                     if (!collectedFiles.Any(f => f.Path.Equals(fileFsi.Path, StringComparison.OrdinalIgnoreCase)))
                     {
@@ -292,7 +367,7 @@ namespace MakingVibe.Services
                     if (!_ignoredFolderNames.Contains(subDirInfo.Name))
                     {
                         // Create a FileSystemItem for the subdirectory to pass down
-                        var subDirFsi = new FileSystemItem { Name = subDirInfo.Name, Path = subDirInfo.FullName, Type = "Directorio", IsDirectory = true };
+                        var subDirFsi = new FileSystemItem { Name = subDirInfo.Name, Path = subDirInfo.FullName, Type = "Directorio", IsDirectory = true, LineCount = null };
                         FindAllFilesRecursive(subDirFsi, collectedFiles); // Recursive call
                     }
                 }
@@ -331,7 +406,14 @@ namespace MakingVibe.Services
                 // Add files in the current directory
                 foreach (var fileInfo in dirInfo.GetFiles())
                 {
-                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false };
+                     // Get line count if applicable
+                     int? lineCount = null;
+                    if (FileHelper.IsTextFile(fileInfo.FullName) && fileInfo.Length <= MaxFileSizeForLineCount)
+                    {
+                        lineCount = GetLineCount(fileInfo.FullName);
+                    }
+
+                    var fileFsi = new FileSystemItem { Name = fileInfo.Name, Path = fileInfo.FullName, Type = fileInfo.Extension, IsDirectory = false, LineCount = lineCount };
                     // Use Path equality for uniqueness check
                     if (!collectedItems.Any(f => f.Path.Equals(fileFsi.Path, StringComparison.OrdinalIgnoreCase)))
                     {
@@ -345,7 +427,7 @@ namespace MakingVibe.Services
                     if (!_ignoredFolderNames.Contains(subDirInfo.Name))
                     {
                         // Create a FileSystemItem for the subdirectory
-                        var subDirFsi = new FileSystemItem { Name = subDirInfo.Name, Path = subDirInfo.FullName, Type = "Directorio", IsDirectory = true };
+                        var subDirFsi = new FileSystemItem { Name = subDirInfo.Name, Path = subDirInfo.FullName, Type = "Directorio", IsDirectory = true, LineCount = null };
 
                         // Add the subdirectory ITSELF to the list
                          if (!collectedItems.Any(f => f.Path.Equals(subDirFsi.Path, StringComparison.OrdinalIgnoreCase)))

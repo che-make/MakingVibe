@@ -12,6 +12,7 @@ namespace MakingVibe.Models
         public required string Path { get; set; }
         public required string Type { get; set; } // e.g., "Directorio", ".txt", ".cs"
         public bool IsDirectory { get; set; }
+        public int? LineCount { get; set; } // Add LineCount property (nullable)
 
         // Implement IEquatable for correct functioning in collections like HashSet or Distinct()
         public bool Equals(FileSystemItem? other)

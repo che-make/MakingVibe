@@ -35,10 +35,22 @@
                 <RowDefinition Height="Auto" /> <!-- Row for Clear Selection Button -->
             </Grid.RowDefinitions>
 
+            <!-- Modified StackPanel to include Collapse/Expand buttons -->
             <StackPanel Grid.Row="0" Margin="10">
-                <TextBlock Text="Explorador de Archivos" FontWeight="Bold" FontSize="16" Margin="0,0,0,10" />
-                <Button x:Name="btnSelectRoot" Content="Seleccionar Carpeta Raíz" Margin="0,5" Padding="5"
+                <TextBlock Text="Explorador de Archivos" FontWeight="Bold" FontSize="16" Margin="0,0,0,5" />
+                <Button x:Name="btnSelectRoot" Content="Seleccionar Carpeta Raíz" Margin="0,0,0,5" Padding="5"
                         Click="btnSelectRoot_Click" ToolTip="Seleccionar la carpeta base del proyecto"/>
+                <!-- Wrap buttons for better layout -->
+                <WrapPanel Orientation="Horizontal" Margin="0,0,0,5">
+                     <Button x:Name="btnCollapseAll" Content="Contraer Todo" Margin="0,0,5,2" Padding="5"
+                            Click="btnCollapseAll_Click" ToolTip="Contraer todos los directorios en el árbol"/>
+                     <Button x:Name="btnExpandAll" Content="Expandir Todo" Margin="0,0,5,2" Padding="5"
+                             Click="btnExpandAll_Click" ToolTip="Expandir todos los directorios en el árbol (puede tardar si hay muchos)"/>
+                     <Button x:Name="btnCollapseCurrent" Content="Contraer Actual" Margin="0,0,5,2" Padding="5"
+                             Click="btnCollapseCurrent_Click" ToolTip="Contraer el directorio seleccionado" IsEnabled="False"/>
+                     <Button x:Name="btnExpandCurrent" Content="Expandir Actual" Margin="0,0,0,2" Padding="5"
+                             Click="btnExpandCurrent_Click" ToolTip="Expandir el directorio seleccionado" IsEnabled="False"/>
+                </WrapPanel>
             </StackPanel>
 
             <!-- TreeView with Context Menu -->
@@ -79,7 +91,7 @@
             <!-- Barra de herramientas con botones de acción -->
             <ToolBar Grid.Row="0" Background="#E0E0E0">
                  <Button x:Name="btnCopyText" Content="Copiar Texto (AI)" Margin="3" Padding="8,3" Click="btnCopyText_Click"
-                        IsEnabled="False" FontWeight="Bold" ToolTip="Copia el mapa de archivos y el contenido de los archivos de texto seleccionados al portapapeles, precedido por el prompt principal y los fragmentos seleccionados."/>
+                        IsEnabled="False" FontWeight="Bold" ToolTip="Copia el mapa de archivos y el contenido de los archivos de texto seleccionados al portapapeles, precedido por el prompt principal y el texto de los fragmentos seleccionados."/>
                 <Separator />
                 <Button x:Name="btnCopy" Content="Copiar" Margin="3" Padding="8,3" Click="btnCopy_Click"
                         IsEnabled="False" ToolTip="Copiar archivos/carpetas seleccionados (Ctrl+C)" />
@@ -119,11 +131,12 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="*" MinHeight="100" /> <!-- Main Prompt -->
                                 <RowDefinition Height="Auto" /> <!-- Separator -->
-                                <RowDefinition Height="*" MinHeight="150"/> <!-- Fragments -->
+                                <RowDefinition Height="Auto" /> <!-- Fragment Add Area -->
+                                <RowDefinition Height="*" MinHeight="150"/> <!-- Fragments List -->
                             </Grid.RowDefinitions>
 
                             <!-- Section 1: Main Prompt -->
-                            <Grid Grid.Row="0" Margin="5">
+                            <Grid Grid.Row="0" Margin="5,5,5,0">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="*"/>
@@ -139,24 +152,44 @@
                              <!-- Separator -->
                              <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch" VerticalAlignment="Center" Background="LightGray" Margin="0,5"/>
 
-                            <!-- Section 2: Fragments -->
+                            <!-- Section 2: Add Fragment Area -->
                             <Grid Grid.Row="2" Margin="5">
                                 <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Título Fragmento:" VerticalAlignment="Center" Margin="0,0,5,5"/>
+                                <TextBox Grid.Row="0" Grid.Column="1" x:Name="txtNewFragmentTitle" Padding="3" Margin="0,0,10,5"
+                                         ToolTip="Título descriptivo para el fragmento (mostrado en la lista)"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Texto Fragmento:" VerticalAlignment="Top" Margin="0,0,5,5"/>
+                                <TextBox Grid.Row="1" Grid.Column="1" x:Name="txtNewFragmentText" Padding="3" Margin="0,0,10,5" AcceptsReturn="True"
+                                         Height="40" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"
+                                         ToolTip="Contenido real del fragmento (usado al copiar)" KeyDown="TxtNewFragmentText_KeyDown"/> <!-- Attached KeyDown here -->
+
+                                <Button Grid.Row="1" Grid.Column="2" x:Name="btnAddFragment" Content="Añadir Fragmento" Padding="5,2" VerticalAlignment="Top"
+                                        Click="AddFragment_Click"/>
+                            </Grid>
+
+
+                            <!-- Section 3: Fragments List -->
+                            <Grid Grid.Row="3" Margin="5">
+                                <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/> <!-- Title -->
-                                    <RowDefinition Height="Auto"/> <!-- Add Controls -->
                                     <RowDefinition Height="*"/>    <!-- List -->
                                     <RowDefinition Height="Auto"/> <!-- Delete Button -->
                                 </Grid.RowDefinitions>
 
-                                <TextBlock Grid.Row="0" Text="Fragmentos de Texto (Seleccione para incluir):" FontWeight="SemiBold" Margin="0,5,0,5"/>
+                                <TextBlock Grid.Row="0" Text="Fragmentos Guardados (Seleccione para incluir):" FontWeight="SemiBold" Margin="0,5,0,5"/>
 
-                                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
-                                    <TextBox x:Name="txtNewFragment" Width="300" Margin="0,0,10,0" Padding="3"
-                                             ToolTip="Texto del nuevo fragmento" KeyDown="TxtNewFragment_KeyDown"/>
-                                    <Button x:Name="btnAddFragment" Content="Añadir Fragmento" Padding="5,2" Click="AddFragment_Click"/>
-                                </StackPanel>
-
-                                <ListView x:Name="listViewFragments" Grid.Row="2" ItemsSource="{Binding Fragments}"
+                                <ListView x:Name="listViewFragments" Grid.Row="1" ItemsSource="{Binding Fragments}"
                                           BorderBrush="#CCCCCC" BorderThickness="1"
                                           SelectionMode="Extended" HorizontalContentAlignment="Stretch">
                                      <ListView.ItemTemplate>
@@ -169,14 +202,15 @@
                                                 <!-- Checkbox to control inclusion -->
                                                 <CheckBox x:Name="cbIncludeFragment" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"
                                                           ToolTip="Incluir este fragmento al copiar"/>
-                                                <!-- Display fragment text -->
-                                                <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                                <!-- MODIFIED: Display Title, ToolTip shows Text -->
+                                                <TextBlock Grid.Column="1" Text="{Binding Title}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center" ToolTip="{Binding Text}" />
                                             </Grid>
                                         </DataTemplate>
                                     </ListView.ItemTemplate>
                                 </ListView>
 
-                                <Button x:Name="btnDeleteFragment" Grid.Row="3" Content="Eliminar Seleccionado(s)" Margin="0,10,0,0" Padding="5,2"
+                                <Button x:Name="btnDeleteFragment" Grid.Row="2" Content="Eliminar Seleccionado(s)" Margin="0,10,0,0" Padding="5,2"
                                         HorizontalAlignment="Left" Click="DeleteFragment_Click"/>
                             </Grid>
                         </Grid>
