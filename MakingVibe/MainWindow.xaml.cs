@@ -962,9 +962,7 @@ namespace MakingVibe
                 // 2. Add Selected Fragments (if any)
                 if (!string.IsNullOrEmpty(fragmentsString))
                 {
-                     promptOnlyOutputBuilder.AppendLine("--- Included Fragments ---"); // Optional separator
                      promptOnlyOutputBuilder.AppendLine(fragmentsString);
-                     promptOnlyOutputBuilder.AppendLine("--- End Fragments ---");      // Optional separator
                      // No extra blank line needed here if it's the last thing
                 }
 
