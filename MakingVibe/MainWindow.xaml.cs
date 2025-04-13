@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json; // Required for JSON serialization
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -16,6 +17,8 @@ using Brushes = System.Windows.Media.Brushes;
 using CheckBox = System.Windows.Controls.CheckBox;
 using Clipboard = System.Windows.Clipboard;
 using Cursors = System.Windows.Input.Cursors;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+using ListViewItem = System.Windows.Controls.ListViewItem;
 using MessageBox = System.Windows.MessageBox;
 using Orientation = System.Windows.Controls.Orientation;
 using WinForms = System.Windows.Forms; // Alias for FolderBrowserDialog
@@ -28,13 +31,16 @@ namespace MakingVibe
         // --- Services ---
         private readonly FileSystemService _fileSystemService;
         private readonly AiCopyService _aiCopyService;
-        private readonly SettingsService _settingsService;
+        private readonly SettingsService _settingsService; // Keep for root path
         private readonly GitService _gitService;
 
         // --- UI State & Data ---
         private string? rootPath;
         private readonly ObservableCollection<FileSystemItem> selectedItems = new();
         private readonly Dictionary<string, TreeViewItem> pathToTreeViewItemMap = new();
+        // *** NEW: Collection for Text Fragments ***
+        public ObservableCollection<TextFragment> Fragments { get; set; }
+        private readonly string _fragmentsFilePath; // Path to save fragments
 
         // Clipboard state (managed by UI)
         private List<FileSystemItem> clipboardItems = new();
@@ -58,6 +64,13 @@ namespace MakingVibe
             _aiCopyService = new AiCopyService(_fileSystemService); // Inject dependency
             _settingsService = new SettingsService();
             _gitService = new GitService();
+
+            // *** NEW: Initialize Fragments and set file path ***
+            Fragments = new ObservableCollection<TextFragment>();
+            // Store fragments file in the same directory as settings for simplicity
+            _fragmentsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "makingvibe.fragments.json");
+            LoadFragments(); // Load fragments on startup
+            listViewFragments.ItemsSource = Fragments; // Bind ListView in code-behind (alternative to XAML binding)
 
             // Bind commands
             CommandBindings.Add(new CommandBinding(RefreshCommand, btnRefresh_Click, CanExecuteRefresh));
@@ -103,12 +116,18 @@ namespace MakingVibe
                 UpdateStatusBarAndButtonStates("Por favor, seleccione una carpeta raíz.");
                 rootPath = null; // Ensure rootPath is null if loaded path is invalid
             }
+            // Set focus to the tree view initially if root is loaded
+             if (rootPath != null)
+             {
+                treeViewFiles.Focus();
+             }
         }
 
-        // Save settings on closing (optional, could save on path change)
+        // Save settings and fragments on closing
         protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
         {
             _settingsService.SaveLastRootPath(rootPath);
+            SaveFragments(); // *** NEW: Save fragments ***
             base.OnClosing(e);
         }
 
@@ -144,6 +163,7 @@ namespace MakingVibe
                 LoadDirectoryTreeUI(rootPath); // Reload UI
                 _settingsService.SaveLastRootPath(rootPath); // Save the newly selected path immediately
                 UpdateStatusBarAndButtonStates("Listo.");
+                treeViewFiles.Focus(); // Set focus after loading
             }
         }
 
@@ -159,6 +179,8 @@ namespace MakingVibe
             if (e.NewValue is TreeViewItem { Tag: FileSystemItem fsi }) // Use pattern matching
             {
                 await ShowPreviewAsync(fsi);
+                 // Optionally make preview tab active
+                 if(tabControlMain.SelectedIndex != 0) tabControlMain.SelectedIndex = 0;
             }
             // Handle deselection or selection of non-FSI items
             else if (e.NewValue == null) {
@@ -680,7 +702,7 @@ namespace MakingVibe
             if (fsi.IsDirectory)
             {
                 txtFileContent.Text = $"Directorio seleccionado: {fsi.Name}\n\nRuta: {fsi.Path}";
-                tabControlMain.SelectedIndex = 0; // Ensure preview tab is selected
+                //tabControlMain.SelectedIndex = 0; // Ensure preview tab is selected - Keep current tab
                 return;
             }
 
@@ -699,7 +721,7 @@ namespace MakingVibe
             {
                 txtFileContent.Text = $"--- No se puede previsualizar este tipo de archivo ---\nTipo: {fsi.Type}\nRuta: {fsi.Path}";
             }
-            tabControlMain.SelectedIndex = 0; // Switch to preview tab
+            //tabControlMain.SelectedIndex = 0; // Switch to preview tab - Keep current tab
         }
 
         // --- Button Actions / Command Handlers ---
@@ -791,6 +813,31 @@ namespace MakingVibe
             // Use a local copy of selected items in case the selection changes during async operation
             var itemsToProcess = selectedItems.ToList();
 
+            // *** MODIFICATION START: Get main prompt AND selected fragments ***
+            string mainPrompt = txtMainPrompt.Text.Trim();
+            var selectedFragmentsText = new StringBuilder();
+
+            // Iterate through ListView items to find checked fragments
+            foreach (var item in listViewFragments.Items)
+            {
+                if (item is TextFragment fragment) // Get the data context (TextFragment)
+                {
+                    // Find the corresponding ListViewItem container
+                    var container = listViewFragments.ItemContainerGenerator.ContainerFromItem(item) as ListViewItem;
+                    if (container != null)
+                    {
+                        // Find the CheckBox within the container's template
+                        var checkBox = FindVisualChild<CheckBox>(container);
+                        if (checkBox != null && checkBox.IsChecked == true)
+                        {
+                            selectedFragmentsText.AppendLine(fragment.Text);
+                            selectedFragmentsText.AppendLine(); // Add blank line between fragments
+                        }
+                    }
+                }
+            }
+            // *** MODIFICATION END ***
+
             this.Cursor = Cursors.Wait;
             statusBarText.Text = "Recopilando archivos de texto...";
             btnCopyText.IsEnabled = false; // Disable button during operation
@@ -807,11 +854,39 @@ namespace MakingVibe
                     return; // Exit early
                 }
 
+                // *** MODIFICATION START: Prepend main prompt and selected fragments ***
+                var finalOutputBuilder = new StringBuilder();
+
+                // 1. Add Main Prompt (if any)
+                if (!string.IsNullOrEmpty(mainPrompt))
+                {
+                    finalOutputBuilder.AppendLine(mainPrompt);
+                    finalOutputBuilder.AppendLine(); // Add a blank line for separation
+                }
+
+                // 2. Add Selected Fragments (if any)
+                string fragmentsString = selectedFragmentsText.ToString().TrimEnd(); // Trim trailing newline
+                if (!string.IsNullOrEmpty(fragmentsString))
+                {
+                     finalOutputBuilder.AppendLine("--- Included Fragments ---"); // Optional separator
+                     finalOutputBuilder.AppendLine(fragmentsString);
+                     finalOutputBuilder.AppendLine("--- End Fragments ---");      // Optional separator
+                     finalOutputBuilder.AppendLine(); // Add a blank line for separation
+                }
+
+
+                // 3. Append the map and contents generated by the service
+                finalOutputBuilder.Append(result.Value.Output);
+
+                string finalClipboardText = finalOutputBuilder.ToString();
+                // *** MODIFICATION END ***
+
+
                 // Copy to clipboard (must be done on UI thread)
-                Clipboard.SetText(result.Value.Output);
+                Clipboard.SetText(finalClipboardText);
 
                 UpdateStatusBarAndButtonStates($"Contenido de {result.Value.TextFileCount} archivo(s) copiado al portapapeles.");
-                MessageBox.Show($"Se ha copiado el mapa y el contenido de {result.Value.TextFileCount} archivo(s) de texto al portapapeles.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show($"Se ha copiado el prompt principal, los fragmentos seleccionados (si los hay), el mapa y el contenido de {result.Value.TextFileCount} archivo(s) de texto al portapapeles.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -1194,6 +1269,122 @@ namespace MakingVibe
                 ? $"MakingVibe - {commitSubject}"
                 : "MakingVibe - (Commit info unavailable)";
         }
+
+        // --- NEW: Fragment Management ---
+
+        private void AddFragment_Click(object sender, RoutedEventArgs e)
+        {
+            AddCurrentFragment();
+        }
+
+        // Handle Enter key in the fragment input box
+        private void TxtNewFragment_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                AddCurrentFragment();
+                // Prevent the 'ding' sound
+                e.Handled = true;
+            }
+        }
+
+        private void AddCurrentFragment()
+        {
+             string newFragmentText = txtNewFragment.Text.Trim();
+            if (!string.IsNullOrEmpty(newFragmentText))
+            {
+                Fragments.Add(new TextFragment { Text = newFragmentText });
+                txtNewFragment.Clear();
+                SaveFragments(); // Save after adding
+            }
+        }
+
+        private void DeleteFragment_Click(object sender, RoutedEventArgs e)
+        {
+            // Get selected items from the ListView
+            var itemsToRemove = listViewFragments.SelectedItems.Cast<TextFragment>().ToList();
+
+            if (itemsToRemove.Count == 0)
+            {
+                MessageBox.Show("Seleccione uno o más fragmentos para eliminar.", "Eliminar Fragmento", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            // Confirmation (optional but recommended)
+            if (MessageBox.Show($"¿Está seguro de que desea eliminar {itemsToRemove.Count} fragmento(s) seleccionado(s)?", "Confirmar Eliminación", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+            {
+                foreach (var item in itemsToRemove)
+                {
+                    Fragments.Remove(item);
+                }
+                SaveFragments(); // Save after deleting
+            }
+        }
+
+
+        // --- NEW: Fragment Persistence ---
+
+        private void LoadFragments()
+        {
+            if (!File.Exists(_fragmentsFilePath)) return;
+
+            try
+            {
+                string json = File.ReadAllText(_fragmentsFilePath);
+                var loadedFragments = JsonSerializer.Deserialize<List<TextFragment>>(json);
+                if (loadedFragments != null)
+                {
+                    Fragments.Clear(); // Clear existing before loading
+                    foreach (var fragment in loadedFragments)
+                    {
+                        Fragments.Add(fragment);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                 Debug.WriteLine($"Error loading fragments from {_fragmentsFilePath}: {ex.Message}");
+                 MessageBox.Show($"No se pudieron cargar los fragmentos guardados.\nError: {ex.Message}", "Error al Cargar Fragmentos", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void SaveFragments()
+        {
+             try
+            {
+                string json = JsonSerializer.Serialize(Fragments, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_fragmentsFilePath, json);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error saving fragments to {_fragmentsFilePath}: {ex.Message}");
+                // Optionally notify the user
+                 MessageBox.Show($"No se pudieron guardar los fragmentos.\nError: {ex.Message}", "Error al Guardar Fragmentos", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+         // --- NEW: Helper to find visual children (needed for getting CheckBox state) ---
+         public static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null) return null;
+
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                DependencyObject child = VisualTreeHelper.GetChild(parent, i);
+                if (child is T correctlyTyped)
+                {
+                    return correctlyTyped;
+                }
+
+                T? childOfChild = FindVisualChild<T>(child);
+                if (childOfChild != null)
+                {
+                    return childOfChild;
+                }
+            }
+            return null;
+        }
+
 
     } // End class MainWindow
 } // End namespace MakingVibe
