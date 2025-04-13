@@ -868,9 +868,7 @@ namespace MakingVibe
                 string fragmentsString = selectedFragmentsText.ToString().TrimEnd(); // Trim trailing newline
                 if (!string.IsNullOrEmpty(fragmentsString))
                 {
-                     finalOutputBuilder.AppendLine("--- Included Fragments ---"); // Optional separator
                      finalOutputBuilder.AppendLine(fragmentsString);
-                     finalOutputBuilder.AppendLine("--- End Fragments ---");      // Optional separator
                      finalOutputBuilder.AppendLine(); // Add a blank line for separation
                 }
 
