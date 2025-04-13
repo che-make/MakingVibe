@@ -7,7 +7,7 @@
         xmlns:models="clr-namespace:MakingVibe.Models"
         mc:Ignorable="d"
         Height="650" Width="950"
-        Icon="makingvibe.ico"
+        Icon="./makingvibe.ico"
         Loaded="Window_Loaded"> <!-- Add Loaded event -->
 
     <!-- Add Keyboard Shortcuts -->
