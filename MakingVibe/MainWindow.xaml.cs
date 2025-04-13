@@ -1,4 +1,8 @@
-﻿using MakingVibe.Models; // Use the model namespace
+﻿/*
+ * MakingVibe/MainWindow.xaml.cs
+ * Modified to implement filter logic.
+ */
+using MakingVibe.Models; // Use the model namespace
 using MakingVibe.Services; // Use the services namespace
 using System;
 using System.Collections.Generic;
@@ -27,7 +31,6 @@ using Orientation = System.Windows.Controls.Orientation;
 using RoutedEventArgs = System.Windows.RoutedEventArgs;
 using WinForms = System.Windows.Forms; // Alias for FolderBrowserDialog
 
-
 namespace MakingVibe
 {
     public partial class MainWindow : Window
@@ -45,6 +48,10 @@ namespace MakingVibe
         // *** Collection for Text Fragments ***
         public ObservableCollection<TextFragment> Fragments { get; set; }
         private readonly string _fragmentsFilePath; // Path to save fragments
+        // *** Collection for File Filters ***
+        public ObservableCollection<FileFilterItem> FileFilters { get; set; }
+        private HashSet<string> _activeFileExtensionsFilter = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // Stores currently applied filters
+
 
         // Clipboard state (managed by UI)
         private List<FileSystemItem> clipboardItems = new();
@@ -71,10 +78,16 @@ namespace MakingVibe
 
             // *** Initialize Fragments and set file path ***
             Fragments = new ObservableCollection<TextFragment>();
-            // Store fragments file in the same directory as settings for simplicity
             _fragmentsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "makingvibe.fragments.json");
             LoadFragments(); // Load fragments on startup
             listViewFragments.ItemsSource = Fragments; // Bind ListView in code-behind (alternative to XAML binding)
+
+            // *** Initialize File Filters ***
+            FileFilters = new ObservableCollection<FileFilterItem>();
+            listViewFilters.ItemsSource = FileFilters; // Bind ListView in code-behind
+
+            // Set DataContext for potential XAML bindings (though we are binding ItemsSource directly here)
+            // this.DataContext = this; // If we were binding FileFilters directly in XAML like {Binding FileFilters}
 
             // Bind commands
             CommandBindings.Add(new CommandBinding(RefreshCommand, btnRefresh_Click, CanExecuteRefresh));
@@ -114,7 +127,7 @@ namespace MakingVibe
             if (!string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath))
             {
                 UpdateStatusBarAndButtonStates($"Cargando directorio: {rootPath}...");
-                LoadDirectoryTreeUI(rootPath);
+                LoadDirectoryTreeUI(rootPath); // Initial load (will also populate filters)
                 UpdateStatusBarAndButtonStates("Listo.");
             }
             else
@@ -167,7 +180,9 @@ namespace MakingVibe
                 rootPath = dialog.SelectedPath;
                 txtCurrentPath.Text = $"Ruta actual: {rootPath}";
                 UpdateStatusBarAndButtonStates($"Cargando directorio: {rootPath}...");
-                LoadDirectoryTreeUI(rootPath); // Reload UI
+                // Reset active filters when changing root directory (or decide if they should persist)
+                _activeFileExtensionsFilter.Clear(); // Resetting is simpler
+                LoadDirectoryTreeUI(rootPath); // Reload UI & Repopulate filters
                 _settingsService.SaveLastRootPath(rootPath); // Save the newly selected path immediately
                 UpdateStatusBarAndButtonStates("Listo.");
                 treeViewFiles.Focus(); // Set focus after loading
@@ -206,7 +221,8 @@ namespace MakingVibe
                 if (treeViewItem.Items.Count == 1 && treeViewItem.Items[0] is string loadingText && loadingText == "Cargando...")
                 {
                     treeViewItem.Items.Clear(); // Remove dummy item
-                    LoadChildrenUI(treeViewItem, fsi.Path); // Load actual children UI elements
+                    // Load actual children UI elements, applying the current filter
+                    LoadChildrenUI(treeViewItem, fsi.Path, _activeFileExtensionsFilter);
                 }
                 // Update button states when expansion state changes
                 UpdateStatusBarAndButtonStates();
@@ -260,13 +276,17 @@ namespace MakingVibe
         // --- Core UI Logic: Tree Loading & Manipulation ---
 
         /// <summary>
-        /// Clears and reloads the entire TreeView UI based on the specified root path.
+        /// Clears and reloads the entire TreeView UI based on the specified root path,
+        /// applying the currently active file extension filters. Also updates the FileFilters list.
         /// </summary>
         private void LoadDirectoryTreeUI(string path)
         {
             treeViewFiles.Items.Clear();
             pathToTreeViewItemMap.Clear();
             selectedItems.Clear(); // Clear selection when reloading tree
+
+            // Store extensions found during the load to update the filter UI later
+            var foundExtensions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
             if (!_fileSystemService.DirectoryExists(path))
             {
@@ -275,6 +295,7 @@ namespace MakingVibe
                 txtCurrentPath.Text = "Ruta actual: (Seleccione una carpeta raíz)";
                 _settingsService.SaveLastRootPath(null); // Clear setting
                 UpdateStatusBarAndButtonStates("Error al cargar el directorio raíz.");
+                FileFilters.Clear(); // Clear filters if root is invalid
                 return;
             }
 
@@ -294,14 +315,18 @@ namespace MakingVibe
                 treeViewFiles.Items.Add(rootTreeViewItem);
                 pathToTreeViewItemMap[rootFsi.Path] = rootTreeViewItem; // Map the root
 
-                // Load initial children UI for the root
-                LoadChildrenUI(rootTreeViewItem, rootFsi.Path);
+                // Load initial children UI for the root, applying filter and collecting extensions
+                LoadChildrenUI(rootTreeViewItem, rootFsi.Path, _activeFileExtensionsFilter, foundExtensions);
                 rootTreeViewItem.IsExpanded = true; // Expand root by default
+
+                // Update the filter UI based on found extensions
+                UpdateFileFiltersUI(foundExtensions);
             }
             catch (Exception ex) // Catch unexpected errors during UI creation
             {
                 MessageBox.Show($"Error inesperado al construir el árbol de directorios:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 UpdateStatusBarAndButtonStates("Error al mostrar el árbol.");
+                FileFilters.Clear(); // Clear filters on error
                 Debug.WriteLine($"Error LoadDirectoryTreeUI: {ex}");
             }
             finally
@@ -310,13 +335,15 @@ namespace MakingVibe
             }
         }
 
+
         /// <summary>
-        /// Loads the children UI (TreeViewItems) for a given parent TreeViewItem.
+        /// Loads the children UI (TreeViewItems) for a given parent TreeViewItem,
+        /// applying file extension filters and collecting found extensions.
         /// </summary>
-        private void LoadChildrenUI(TreeViewItem parentTreeViewItem, string directoryPath)
+        private void LoadChildrenUI(TreeViewItem parentTreeViewItem, string directoryPath, HashSet<string> allowedExtensions, Dictionary<string, int>? foundExtensions = null)
         {
-            // Use FileSystemService to get the data (now includes line counts)
-            var childrenData = _fileSystemService.GetDirectoryChildren(directoryPath);
+            // Use FileSystemService to get the data, passing the filter
+            var childrenData = _fileSystemService.GetDirectoryChildren(directoryPath, allowedExtensions);
 
             parentTreeViewItem.Items.Clear(); // Clear existing items (like "Cargando...")
 
@@ -326,36 +353,111 @@ namespace MakingVibe
                 return;
             }
 
-            if (!childrenData.Any())
+            var childrenList = childrenData.ToList(); // Convert to list for potential modification/use
+
+            if (!childrenList.Any())
             {
-                 // Optionally add a placeholder if the directory is empty
-                 // parentTreeViewItem.Items.Add(new TreeViewItem { Header = "[Vacío]", Foreground = Brushes.Gray, IsEnabled = false });
+                 // Optionally add a placeholder if the directory is empty after filtering
+                 // parentTreeViewItem.Items.Add(new TreeViewItem { Header = "[Vacío o Filtrado]", Foreground = Brushes.Gray, IsEnabled = false });
                 return;
             }
 
             // Create TreeViewItems for each child data item
-            foreach (var fsi in childrenData)
+            foreach (var fsi in childrenList)
             {
                 var childTreeViewItem = CreateTreeViewItemUI(fsi); // This now handles the line count display
                 parentTreeViewItem.Items.Add(childTreeViewItem);
                 pathToTreeViewItemMap[fsi.Path] = childTreeViewItem; // Add to map
 
+                // Collect extension if it's a file and collection is provided
+                if (!fsi.IsDirectory && foundExtensions != null)
+                {
+                    string ext = string.IsNullOrEmpty(fsi.Type) ? "[Sin extensión]" : fsi.Type;
+                    if (foundExtensions.ContainsKey(ext))
+                        foundExtensions[ext]++;
+                    else
+                        foundExtensions[ext] = 1;
+                }
+
                 // Add dummy node for lazy loading if it's a directory
                 if (fsi.IsDirectory)
                 {
                     childTreeViewItem.Items.Add("Cargando...");
+                    // Recursively collect extensions from subdirectories if needed for the filter list
+                    if (foundExtensions != null)
+                    {
+                        CollectExtensionsRecursive(fsi.Path, foundExtensions);
+                    }
                 }
             }
 
             // After loading children, check if parent needs auto-selection
             if(parentTreeViewItem.Tag is FileSystemItem parentFsi)
             {
-                 UpdateParentDirectorySelectionState(parentFsi, childrenData); // Pass childrenData to avoid redundant fetch
+                 UpdateParentDirectorySelectionState(parentFsi, childrenList); // Pass childrenData to avoid redundant fetch
             }
         }
 
         /// <summary>
-        /// Refreshes a specific node in the TreeView UI.
+        /// Recursively scans directories just to collect file extensions for the filter list.
+        /// This runs *without* applying the active filter, so the list shows all possibilities.
+        /// </summary>
+        private void CollectExtensionsRecursive(string directoryPath, Dictionary<string, int> foundExtensions)
+        {
+             // Use GetDirectoryChildren WITHOUT the filter to find all potential extensions
+            var allChildren = _fileSystemService.GetDirectoryChildren(directoryPath);
+            if (allChildren == null) return; // Access denied or error
+
+            foreach(var item in allChildren)
+            {
+                if (!item.IsDirectory)
+                {
+                    string ext = string.IsNullOrEmpty(item.Type) ? "[Sin extensión]" : item.Type;
+                     if (foundExtensions.ContainsKey(ext))
+                        foundExtensions[ext]++;
+                    else
+                        foundExtensions[ext] = 1;
+                }
+                else
+                {
+                    // Recurse into subdirectories
+                    CollectExtensionsRecursive(item.Path, foundExtensions);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Updates the FileFilters ObservableCollection based on extensions found in the project.
+        /// Preserves the IsEnabled state of existing filters.
+        /// </summary>
+        private void UpdateFileFiltersUI(Dictionary<string, int> foundExtensions)
+        {
+             // Store current states
+            var currentStates = FileFilters.ToDictionary(f => f.Extension, f => f.IsEnabled);
+
+            FileFilters.Clear(); // Clear the list before repopulating
+
+            // Add sorted extensions
+            foreach (var kvp in foundExtensions.OrderBy(kv => kv.Key))
+            {
+                bool isEnabled = true; // Default to true
+                if (currentStates.TryGetValue(kvp.Key, out bool previousState))
+                {
+                    isEnabled = previousState; // Restore previous state if exists
+                }
+
+                FileFilters.Add(new FileFilterItem
+                {
+                    Extension = kvp.Key,
+                    Count = kvp.Value,
+                    IsEnabled = isEnabled
+                });
+            }
+        }
+
+
+        /// <summary>
+        /// Refreshes a specific node in the TreeView UI, reapplying filters.
         /// </summary>
         private void RefreshNodeUI(TreeViewItem nodeToRefresh, FileSystemItem fsi)
         {
@@ -381,8 +483,8 @@ namespace MakingVibe
 
             nodeToRefresh.Items.Clear(); // Clear existing UI children
 
-            // Reload children UI (this now includes the parent state check and line counts)
-            LoadChildrenUI(nodeToRefresh, fsi.Path);
+            // Reload children UI, applying current filter. Do not update the global filter list here.
+            LoadChildrenUI(nodeToRefresh, fsi.Path, _activeFileExtensionsFilter);
 
             // Restore expansion state if needed
             nodeToRefresh.IsExpanded = wasExpanded;
@@ -507,7 +609,8 @@ namespace MakingVibe
                 }
                 else if (!isCtrlPressed && fsi.IsDirectory)
                 {
-                    UpdateDirectoryFilesSelection(fsi, true);
+                    // Pass the current filter to select only visible files
+                    UpdateDirectoryFilesSelection(fsi, true, _activeFileExtensionsFilter);
                 }
 
                 if (!fsi.IsDirectory || (added && fsi.IsDirectory))
@@ -534,7 +637,8 @@ namespace MakingVibe
                  }
                  else if (!isCtrlPressed && fsi.IsDirectory)
                  {
-                     UpdateDirectoryFilesSelection(fsi, false);
+                     // Pass the current filter to deselect only visible files
+                     UpdateDirectoryFilesSelection(fsi, false, _activeFileExtensionsFilter);
                  }
 
                  if (!fsi.IsDirectory || (removed && fsi.IsDirectory))
@@ -548,6 +652,7 @@ namespace MakingVibe
         /// <summary>
         /// Recursively selects or deselects all descendant *files AND directories* within a specified directory,
         /// updating the selection collection and the UI checkboxes. (Used for Ctrl+Click)
+        /// IMPORTANT: This operation ignores the current UI filters for simplicity, selecting all underlying descendants.
         /// </summary>
         /// <param name="directoryFsi">The FileSystemItem representing the directory.</param>
         /// <param name="select">True to select descendants, False to deselect descendants.</param>
@@ -557,6 +662,7 @@ namespace MakingVibe
              if (!directoryFsi.IsDirectory) return;
 
              // --- UPDATED: Use new service method ---
+             // Note: FindAllDescendantsRecursive does NOT apply the UI filter. It finds ALL underlying items.
              var descendantsToUpdate = new List<FileSystemItem>();
              _fileSystemService.FindAllDescendantsRecursive(directoryFsi, descendantsToUpdate);
              // --- END UPDATED ---
@@ -583,7 +689,7 @@ namespace MakingVibe
                          collectionChanged = true;
                      }
 
-                     // Update the corresponding UI CheckBox state
+                     // Update the corresponding UI CheckBox state IF the item is visible in the tree
                      if (pathToTreeViewItemMap.TryGetValue(item.Path, out var descendantTreeViewItem))
                      {
                           // Find checkbox within the Grid header
@@ -596,7 +702,7 @@ namespace MakingVibe
                              }
                          }
                      }
-                     // else: Item not visible/expanded in tree, UI update not possible yet.
+                     // else: Item not visible/expanded in tree (or filtered out), UI update not possible yet.
                  }
                  // --- END Process ALL descendants ---
              }
@@ -617,12 +723,14 @@ namespace MakingVibe
 
 
         /// <summary>
-        /// Updates the selection state (both in the collection and UI) for direct child *files* of a directory.
+        /// Updates the selection state (both in the collection and UI) for direct child *files* of a directory,
+        /// considering the currently active file filters.
         /// (Used for Simple Click on Directory)
         /// </summary>
-        private void UpdateDirectoryFilesSelection(FileSystemItem directoryFsi, bool select)
+        private void UpdateDirectoryFilesSelection(FileSystemItem directoryFsi, bool select, HashSet<string> allowedExtensions)
         {
-            var children = _fileSystemService.GetDirectoryChildren(directoryFsi.Path);
+            // Get children respecting the filter
+            var children = _fileSystemService.GetDirectoryChildren(directoryFsi.Path, allowedExtensions);
             if (children == null) return;
 
             bool collectionChanged = false;
@@ -631,7 +739,8 @@ namespace MakingVibe
             try {
                 foreach (var child in children)
                 {
-                    if (!child.IsDirectory) // Only direct files
+                    // Only process files (directories are handled by their own checkboxes)
+                    if (!child.IsDirectory)
                     {
                         bool currentlySelected = selectedItems.Contains(child);
                         if (select && !currentlySelected)
@@ -645,6 +754,7 @@ namespace MakingVibe
                             collectionChanged = true;
                         }
 
+                        // Update UI checkbox only if the child item exists in the map (i.e., it's visible)
                         if (pathToTreeViewItemMap.TryGetValue(child.Path, out var childTreeViewItem))
                         {
                              // Find checkbox within the Grid header
@@ -669,12 +779,14 @@ namespace MakingVibe
                 UpdateStatusBarAndButtonStates();
             }
 
-            UpdateParentDirectorySelectionState(directoryFsi);
+            // Update parent state based on the state of its *visible* children
+            UpdateParentDirectorySelectionState(directoryFsi, children); // Pass filtered children
         }
 
 
         /// <summary>
-        /// Checks if a parent directory should be selected based on the selection state of its direct children.
+        /// Checks if a parent directory should be selected based on the selection state of its direct children
+        /// that are currently *visible* in the TreeView (respecting filters).
         /// Updates the parent's checkbox and selection state accordingly.
         /// </summary>
         private void UpdateParentDirectorySelectionState(FileSystemItem childItem, IEnumerable<FileSystemItem>? cachedChildren = null)
@@ -687,18 +799,48 @@ namespace MakingVibe
             if (!pathToTreeViewItemMap.TryGetValue(parentPath, out var parentTvi)) return;
             if (parentTvi.Tag is not FileSystemItem parentFsi || !parentFsi.IsDirectory) return;
 
-            var children = cachedChildren ?? _fileSystemService.GetDirectoryChildren(parentPath);
-            if (children == null || !children.Any()) return; // No children or access denied
+            // Get visible children. If cachedChildren (which should be filtered) is provided, use that.
+            // Otherwise, fetch children applying the current filter.
+            var visibleChildren = cachedChildren?.ToList() // Use cached if available
+                                  ?? _fileSystemService.GetDirectoryChildren(parentPath, _activeFileExtensionsFilter)?.ToList(); // Fetch with filter otherwise
 
-            var directChildrenList = children.ToList();
-            // Parent should be checked if ALL direct children (files and valid dirs that actually exist) are selected
-             bool shouldBeChecked = directChildrenList.All(item => selectedItems.Contains(item));
+            if (visibleChildren == null || !visibleChildren.Any())
+            {
+                // If there are no visible children (empty or all filtered out), the parent should generally be unchecked.
+                // However, if the parent itself was explicitly selected (e.g., via Ctrl+Click), we might want to keep it selected.
+                // For simplicity now, we'll uncheck it if there are no visible children to select.
+                if (parentTvi.Header is Grid headerGrid)
+                 {
+                     var parentCheckbox = headerGrid.Children.OfType<CheckBox>().FirstOrDefault();
+                     if (parentCheckbox != null)
+                     {
+                         _isUpdatingParentState = true;
+                         try
+                         {
+                              if (parentCheckbox.IsChecked != false) parentCheckbox.IsChecked = false;
+                              if (selectedItems.Contains(parentFsi)) selectedItems.Remove(parentFsi);
+                         } finally { _isUpdatingParentState = false; }
+                     }
+                 }
+                 // Recurse upwards
+                 if (!parentPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
+                 {
+                     UpdateParentDirectorySelectionState(parentFsi);
+                 } else {
+                     UpdateStatusBarAndButtonStates();
+                 }
+                return;
+            }
+
+
+            // Parent should be checked if ALL *visible* direct children are selected
+            bool shouldBeChecked = visibleChildren.All(item => selectedItems.Contains(item));
 
 
             // Find checkbox within the Grid header
-             if (parentTvi.Header is Grid headerGrid)
+             if (parentTvi.Header is Grid headerGrid1)
              {
-                 var parentCheckbox = headerGrid.Children.OfType<CheckBox>().FirstOrDefault();
+                 var parentCheckbox = headerGrid1.Children.OfType<CheckBox>().FirstOrDefault();
                  if (parentCheckbox != null)
                  {
                      _isUpdatingParentState = true;
@@ -840,7 +982,10 @@ namespace MakingVibe
                  // Standard Button States (based on selectedItems collection)
                  bool hasSelection = selectedItems.Count > 0;
                  bool hasSingleSelection = selectedItems.Count == 1;
-                 bool canPaste = clipboardItems.Count > 0 && treeViewFiles.SelectedItem is TreeViewItem; // Simplified paste check
+                  // Paste enabled if clipboard has items AND (root exists OR a directory is selected)
+                 bool canPaste = clipboardItems.Count > 0 &&
+                                (treeViewFiles.SelectedItem is TreeViewItem targetItem && targetItem.Tag is FileSystemItem targetFsi);
+                                // Simplified: just check if *anything* is selected as target, paste logic will refine
 
                  // Determine if any fragments are selected via checkbox
                  bool anyFragmentSelected = false;
@@ -872,9 +1017,16 @@ namespace MakingVibe
                  btnDelete.IsEnabled = hasSelection;
                  btnRename.IsEnabled = hasSingleSelection;
                  btnPaste.IsEnabled = canPaste;
-                 btnClearSelection.IsEnabled = hasSelection;
+                 btnClearSelection.IsEnabled = hasSelection; // Enable if there's a selection OR if the tree has items? Let's stick to selection.
                  btnCollapseAll.IsEnabled = treeHasRoot;
                  btnExpandAll.IsEnabled = treeHasRoot;
+
+                  // Enable filter buttons only if a root path is loaded
+                 bool filtersEnabled = !string.IsNullOrEmpty(rootPath) && FileFilters.Any();
+                 btnSelectAllFilters.IsEnabled = filtersEnabled;
+                 btnDeselectAllFilters.IsEnabled = filtersEnabled;
+                 btnApplyFilters.IsEnabled = !string.IsNullOrEmpty(rootPath); // Apply is always possible if root exists, even if no filters are defined yet
+
 
                  // Collapse/Expand Current Button States (based on treeViewFiles.SelectedItem)
                  bool canCollapseCurrent = false;
@@ -882,7 +1034,8 @@ namespace MakingVibe
                  if (treeViewFiles.SelectedItem is TreeViewItem selectedTvi && selectedTvi.Tag is FileSystemItem selectedFsi && selectedFsi.IsDirectory)
                  {
                      canCollapseCurrent = selectedTvi.IsExpanded;
-                     canExpandCurrent = !selectedTvi.IsExpanded && selectedTvi.HasItems && !(selectedTvi.Items.Count == 1 && selectedTvi.Items[0] is string); // Enable expand only if it HAS items and they are loaded
+                     // Enable expand only if it HAS items and they are loaded or are the dummy node
+                     canExpandCurrent = !selectedTvi.IsExpanded && selectedTvi.HasItems;
                  }
                  btnCollapseCurrent.IsEnabled = canCollapseCurrent;
                  btnExpandCurrent.IsEnabled = canExpandCurrent;
@@ -908,6 +1061,7 @@ namespace MakingVibe
             if (!string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath))
             {
                 UpdateStatusBarAndButtonStates($"Refrescando: {rootPath}...");
+                 // Reload directory tree, which will re-apply active filters and update filter list
                 LoadDirectoryTreeUI(rootPath);
                 UpdateStatusBarAndButtonStates("Árbol refrescado.");
             }
@@ -1007,6 +1161,7 @@ namespace MakingVibe
             try
             {
                 // Use Task.Run for the potentially long-running service call
+                // AiCopyService now handles finding text files recursively itself
                 var result = await Task.Run(() => _aiCopyService.GenerateAiClipboardContentAsync(itemsToProcess, rootPath));
 
                 if (result == null)
@@ -1015,6 +1170,7 @@ namespace MakingVibe
                     // We still might want to copy the prompt/fragments.
                     var promptOnlyOutputBuilder = new StringBuilder();
                     if (!string.IsNullOrEmpty(mainPrompt)) { promptOnlyOutputBuilder.AppendLine(mainPrompt).AppendLine(); }
+                    if (!string.IsNullOrEmpty(fragmentsString)) { promptOnlyOutputBuilder.AppendLine(fragmentsString).AppendLine(); } // Append fragments if present
                     string finalPromptOnlyText = promptOnlyOutputBuilder.ToString().Trim();
 
                     if (string.IsNullOrEmpty(finalPromptOnlyText))
@@ -1072,8 +1228,14 @@ namespace MakingVibe
                  catch (Exception clipEx)
                  {
                       Debug.WriteLine($"Clipboard Error: {clipEx.Message}");
-                      MessageBox.Show($"No se pudo copiar al portapapeles. El contenido puede ser demasiado grande.\nError: {clipEx.Message}", "Error al Copiar", MessageBoxButton.OK, MessageBoxImage.Warning);
+                      // Try to provide more info if possible (e.g., size)
+                      string sizeInfo = finalClipboardText.Length > 1024*1024
+                                        ? $" (Tamaño aprox: {finalClipboardText.Length / 1024.0 / 1024.0:F1} MB)"
+                                        : $" (Tamaño: {finalClipboardText.Length} bytes)";
+                      MessageBox.Show($"No se pudo copiar al portapapeles. El contenido puede ser demasiado grande.{sizeInfo}\nError: {clipEx.Message}", "Error al Copiar", MessageBoxButton.OK, MessageBoxImage.Warning);
                       // Don't show the success message if clipboard failed
+                      this.Cursor = Cursors.Arrow; // Restore cursor here too
+                      UpdateStatusBarAndButtonStates();
                       return;
                  }
 
@@ -1119,141 +1281,209 @@ namespace MakingVibe
         }
 
         private void btnPaste_Click(object sender, RoutedEventArgs e)
+{
+    if (clipboardItems.Count == 0)
+    {
+        MessageBox.Show("El portapapeles está vacío.", "Pegar", MessageBoxButton.OK, MessageBoxImage.Information);
+        return;
+    }
+
+    TreeViewItem? targetTreeViewItem = treeViewFiles.SelectedItem as TreeViewItem;
+    if (targetTreeViewItem == null || targetTreeViewItem.Tag is not FileSystemItem targetFsi)
+    {
+        if (string.IsNullOrEmpty(rootPath))
         {
-            if (clipboardItems.Count == 0)
+            MessageBox.Show("Seleccione un elemento (preferiblemente un directorio) en el árbol como destino para pegar, o asegúrese de que haya una carpeta raíz cargada.", "Pegar", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        targetFsi = new FileSystemItem
+        {
+            Name = Path.GetFileName(rootPath) ?? "Root",
+            Path = rootPath,
+            Type = "Directorio Raíz",
+            IsDirectory = true,
+            LineCount = null
+        };
+    }
+
+    string destinationDir = targetFsi.IsDirectory ? targetFsi.Path : (_fileSystemService.GetDirectoryName(targetFsi.Path) ?? rootPath ?? "");
+    if (string.IsNullOrEmpty(destinationDir))
+    {
+        MessageBox.Show("No se pudo determinar el directorio destino.", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
+        return;
+    }
+
+    UpdateStatusBarAndButtonStates("Pegando elementos...");
+    this.Cursor = Cursors.Wait;
+
+    bool refreshNeeded = false;
+    string? refreshParentPath = null;
+    string? sourceRefreshParentPath = null;
+    int pasteCount = 0; // moved here for visibility in finally
+
+    try
+    {
+        var itemsToProcess = clipboardItems.ToList();
+
+        foreach (var itemToPaste in itemsToProcess)
+        {
+            string sourcePath = itemToPaste.Path;
+            string targetName = _fileSystemService.GetFileName(sourcePath);
+            string fullTargetPath = _fileSystemService.CombinePath(destinationDir, targetName);
+            string? sourceParent = isCutOperation ? _fileSystemService.GetDirectoryName(sourcePath) : null;
+
+            if (string.Equals(sourcePath, fullTargetPath, StringComparison.OrdinalIgnoreCase)) continue;
+            if (isCutOperation && string.Equals(_fileSystemService.GetDirectoryName(sourcePath), destinationDir, StringComparison.OrdinalIgnoreCase)) continue;
+
+            if ((itemToPaste.IsDirectory && !_fileSystemService.DirectoryExists(sourcePath)) ||
+                (!itemToPaste.IsDirectory && !_fileSystemService.FileExists(sourcePath)))
             {
-                MessageBox.Show("El portapapeles está vacío.", "Pegar", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-             // Use treeViewFiles.SelectedItem to determine target directory more reliably
-             TreeViewItem? targetTreeViewItem = treeViewFiles.SelectedItem as TreeViewItem;
-            if (targetTreeViewItem == null || targetTreeViewItem.Tag is not FileSystemItem targetFsi)
-            {
-                MessageBox.Show("Seleccione un elemento (preferiblemente un directorio) en el árbol como destino para pegar.", "Pegar", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                Debug.WriteLine($"Source path not found for paste/move: {sourcePath}");
+                MessageBox.Show($"El elemento de origen '{itemToPaste.Name}' ya no existe.", "Error al Pegar/Mover", MessageBoxButton.OK, MessageBoxImage.Warning);
+                if (isCutOperation) clipboardItems.Remove(itemToPaste);
+                continue;
             }
 
-            string destinationDir = targetFsi.IsDirectory ? targetFsi.Path : (_fileSystemService.GetDirectoryName(targetFsi.Path) ?? rootPath ?? "");
-             if(string.IsNullOrEmpty(destinationDir))
-             {
-                  MessageBox.Show($"No se pudo determinar el directorio destino.", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
-                  return;
-             }
+            if (itemToPaste.IsDirectory && destinationDir.StartsWith(sourcePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show($"No se puede {(isCutOperation ? "mover" : "copiar")} la carpeta '{itemToPaste.Name}' dentro de sí misma o de una subcarpeta.", "Operación Inválida", MessageBoxButton.OK, MessageBoxImage.Warning);
+                continue;
+            }
 
-            UpdateStatusBarAndButtonStates("Pegando elementos...");
-            this.Cursor = Cursors.Wait;
-            bool refreshNeeded = false;
-            string? refreshParentPath = null;
-            string? sourceRefreshParentPath = null;
+            bool targetExists = itemToPaste.IsDirectory
+                ? _fileSystemService.DirectoryExists(fullTargetPath)
+                : _fileSystemService.FileExists(fullTargetPath);
+
+            if (targetExists)
+            {
+                var overwriteResult = MessageBox.Show(
+                    $"El elemento '{targetName}' ya existe en el destino.\n¿Desea sobrescribirlo?",
+                    "Conflicto al Pegar",
+                    MessageBoxButton.YesNoCancel,
+                    MessageBoxImage.Warning);
+
+                if (overwriteResult == MessageBoxResult.Cancel) break;
+                if (overwriteResult == MessageBoxResult.No) continue;
+
+                try
+                {
+                    var targetToDeleteFsi = new FileSystemItem
+                    {
+                        Name = targetName,
+                        Path = fullTargetPath,
+                        Type = itemToPaste.IsDirectory ? "Directorio" : Path.GetExtension(fullTargetPath),
+                        IsDirectory = itemToPaste.IsDirectory,
+                        LineCount = null
+                    };
+
+                    _fileSystemService.DeleteItem(targetToDeleteFsi);
+
+                    if (pathToTreeViewItemMap.TryGetValue(fullTargetPath, out var existingTvi))
+                    {
+                        if (existingTvi.Tag is FileSystemItem existingFsi)
+                            selectedItems.Remove(existingFsi);
+
+                        pathToTreeViewItemMap.Remove(fullTargetPath);
+                    }
+                }
+                catch (Exception delEx)
+                {
+                    MessageBox.Show($"No se pudo sobrescribir '{targetName}'. Error: {delEx.Message}", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
+                    continue;
+                }
+            }
 
             try
             {
-                int pasteCount = 0;
-                var itemsToProcess = clipboardItems.ToList();
-
-                foreach (var itemToPaste in itemsToProcess)
+                if (isCutOperation)
                 {
-                    string sourcePath = itemToPaste.Path;
-                    string targetName = _fileSystemService.GetFileName(sourcePath);
-                    string fullTargetPath = _fileSystemService.CombinePath(destinationDir, targetName);
-                    string? sourceParent = isCutOperation ? _fileSystemService.GetDirectoryName(sourcePath) : null;
+                    _fileSystemService.MoveItem(sourcePath, fullTargetPath, itemToPaste.IsDirectory);
 
-                    if (string.Equals(sourcePath, fullTargetPath, StringComparison.OrdinalIgnoreCase)) continue;
-                    if ((itemToPaste.IsDirectory && !_fileSystemService.DirectoryExists(sourcePath)) || (!itemToPaste.IsDirectory && !_fileSystemService.FileExists(sourcePath)))
-                    {
-                        Debug.WriteLine($"Source path not found for paste/move: {sourcePath}");
-                        MessageBox.Show($"El elemento de origen '{itemToPaste.Name}' ya no existe.", "Error al Pegar/Mover", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        continue;
-                    }
-                     if (itemToPaste.IsDirectory && destinationDir.StartsWith(sourcePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                     {
-                         MessageBox.Show($"No se puede {(isCutOperation ? "mover" : "copiar")} la carpeta '{itemToPaste.Name}' dentro de sí misma o de una subcarpeta.", "Operación Inválida", MessageBoxButton.OK, MessageBoxImage.Warning); continue;
-                     }
+                    pathToTreeViewItemMap.Remove(sourcePath);
+                    selectedItems.Remove(itemToPaste);
 
-                    bool targetExists = itemToPaste.IsDirectory ? _fileSystemService.DirectoryExists(fullTargetPath) : _fileSystemService.FileExists(fullTargetPath);
-                    if (targetExists)
-                    {
-                        var overwriteResult = MessageBox.Show($"El elemento '{targetName}' ya existe en el destino.\n¿Desea sobrescribirlo?", "Conflicto al Pegar", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                        if (overwriteResult == MessageBoxResult.No) continue;
-
-                        try
-                        {
-                             // We need LineCount = null here as DeleteItem doesn't use it
-                            var targetToDeleteFsi = new FileSystemItem { Name = targetName, Path = fullTargetPath, Type = "", IsDirectory = itemToPaste.IsDirectory, LineCount = null };
-                            _fileSystemService.DeleteItem(targetToDeleteFsi);
-                            if (pathToTreeViewItemMap.TryGetValue(fullTargetPath, out var existingTvi)) {
-                                if (existingTvi.Tag is FileSystemItem existingFsi) selectedItems.Remove(existingFsi);
-                                pathToTreeViewItemMap.Remove(fullTargetPath);
-                            }
-                        }
-                        catch (Exception delEx)
-                        {
-                            MessageBox.Show($"No se pudo sobrescribir '{targetName}'. Error: {delEx.Message}", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error); continue;
-                        }
-                    }
-
-                    try
-                    {
-                        if (isCutOperation)
-                        {
-                             _fileSystemService.MoveItem(sourcePath, fullTargetPath, itemToPaste.IsDirectory);
-                             pathToTreeViewItemMap.Remove(sourcePath);
-                             if(sourceParent != null) sourceRefreshParentPath = sourceParent;
-                        }
-                        else
-                        {
-                            _fileSystemService.CopyItem(sourcePath, fullTargetPath, itemToPaste.IsDirectory);
-                        }
-                        pasteCount++;
-                        refreshNeeded = true;
-                        refreshParentPath = destinationDir;
-                    }
-                    catch (Exception opEx)
-                    {
-                        MessageBox.Show($"Error al {(isCutOperation ? "mover" : "copiar")} '{itemToPaste.Name}':\n{opEx.Message}", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
-                         break;
-                    }
+                    if (sourceParent != null)
+                        sourceRefreshParentPath = sourceParent;
+                }
+                else
+                {
+                    _fileSystemService.CopyItem(sourcePath, fullTargetPath, itemToPaste.IsDirectory);
                 }
 
-                if (isCutOperation && pasteCount > 0)
-                {
-                    clipboardItems.Clear();
-                    isCutOperation = false;
-                }
-
-                if (refreshNeeded && !string.IsNullOrEmpty(rootPath))
-                {
-                     if (sourceRefreshParentPath != null && pathToTreeViewItemMap.TryGetValue(sourceRefreshParentPath, out var sourceParentNode))
-                     {
-                         if (sourceParentNode.Tag is FileSystemItem sourceParentFsi) RefreshNodeUI(sourceParentNode, sourceParentFsi);
-                     }
-
-                     if (refreshParentPath != null && pathToTreeViewItemMap.TryGetValue(refreshParentPath, out var parentNode))
-                     {
-                          if (parentNode.Tag is FileSystemItem parentFsi) RefreshNodeUI(parentNode, parentFsi);
-                     }
-                     else if (refreshParentPath != null && refreshParentPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase)) {
-                         LoadDirectoryTreeUI(rootPath); // Refresh root if destination was root
-                     }
-                     else {
-                         LoadDirectoryTreeUI(rootPath); // Fallback to full refresh
-                     }
-                }
-
-                 UpdateStatusBarAndButtonStates($"{pasteCount} elemento(s) pegado(s) en '{_fileSystemService.GetFileName(destinationDir)}'.");
+                pasteCount++;
+                refreshNeeded = true;
+                refreshParentPath = destinationDir;
             }
-            catch (Exception ex)
+            catch (Exception opEx)
             {
-                MessageBox.Show($"Error inesperado durante la operación de pegado:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                UpdateStatusBarAndButtonStates("Error al pegar.");
-                 if(!string.IsNullOrEmpty(rootPath)) LoadDirectoryTreeUI(rootPath);
-            }
-            finally
-            {
-                this.Cursor = Cursors.Arrow;
-                UpdateStatusBarAndButtonStates();
+                MessageBox.Show($"Error al {(isCutOperation ? "mover" : "copiar")} '{itemToPaste.Name}':\n{opEx.Message}", "Error al Pegar", MessageBoxButton.OK, MessageBoxImage.Error);
+                break;
             }
         }
+
+        if (isCutOperation && pasteCount > 0)
+        {
+            clipboardItems.Clear();
+            isCutOperation = false;
+        }
+
+        if (refreshNeeded && !string.IsNullOrEmpty(rootPath))
+        {
+            if (sourceRefreshParentPath != null && pathToTreeViewItemMap.TryGetValue(sourceRefreshParentPath, out var sourceParentNode))
+            {
+                if (sourceParentNode.Tag is FileSystemItem sourceParentFsi)
+                    RefreshNodeUI(sourceParentNode, sourceParentFsi);
+            }
+            else if (sourceRefreshParentPath != null && sourceRefreshParentPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
+            {
+                LoadDirectoryTreeUI(rootPath);
+                refreshParentPath = null;
+            }
+
+            if (refreshParentPath != null && pathToTreeViewItemMap.TryGetValue(refreshParentPath, out var parentNode))
+            {
+                if (parentNode.Tag is FileSystemItem parentFsi)
+                    RefreshNodeUI(parentNode, parentFsi);
+            }
+            else if (refreshParentPath != null && refreshParentPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
+            {
+                LoadDirectoryTreeUI(rootPath);
+            }
+            else if (refreshParentPath != null)
+            {
+                LoadDirectoryTreeUI(rootPath);
+            }
+            else if (sourceRefreshParentPath == null)
+            {
+                LoadDirectoryTreeUI(rootPath);
+            }
+        }
+
+        if (pasteCount > 0)
+        {
+            UpdateStatusBarAndButtonStates($"{pasteCount} elemento(s) pegado(s) en '{_fileSystemService.GetFileName(destinationDir)}'.");
+        }
+        else
+        {
+            UpdateStatusBarAndButtonStates("No se pegaron elementos.");
+        }
+    }
+    catch (Exception ex)
+    {
+        MessageBox.Show($"Error inesperado durante la operación de pegado:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        UpdateStatusBarAndButtonStates("Error al pegar.");
+
+        if (!string.IsNullOrEmpty(rootPath))
+            LoadDirectoryTreeUI(rootPath);
+    }
+    finally
+    {
+        this.Cursor = Cursors.Arrow;
+        UpdateStatusBarAndButtonStates(); // Final general update
+    }
+}
+
 
 
         private void btnDelete_Click(object sender, RoutedEventArgs e)
@@ -1269,17 +1499,18 @@ namespace MakingVibe
                 UpdateStatusBarAndButtonStates("Eliminando...");
                 this.Cursor = Cursors.Wait;
                 int deleteCount = 0;
-                var itemsToDelete = selectedItems.ToList();
+                var itemsToDelete = selectedItems.ToList(); // Copy selection before clearing
                 var parentPathsToRefresh = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+                 // --- Clear selection and prepare paths BEFORE deleting ---
                  var pathsToDelete = itemsToDelete.Select(i => i.Path).ToList();
-                 ClearAllSelectionsUI(); // Unchecks UI and clears selectedItems first
+                 ClearAllSelectionsUI(); // Unchecks UI and clears selectedItems collection
 
                 try
                 {
                     foreach (var itemPath in pathsToDelete)
                     {
-                        // Find the original item from the list (don't rely on selectedItems anymore)
+                        // Find the original item from the temporary list (don't rely on selectedItems anymore)
                         var item = itemsToDelete.FirstOrDefault(i => i.Path.Equals(itemPath, StringComparison.OrdinalIgnoreCase));
                         if(item == null) continue; // Should not happen, but safety check
 
@@ -1288,24 +1519,38 @@ namespace MakingVibe
                             string? parentPath = _fileSystemService.GetDirectoryName(item.Path);
                             _fileSystemService.DeleteItem(item); // DeleteItem uses the item's path and IsDirectory flag
 
-                            pathToTreeViewItemMap.Remove(item.Path);
-
-                            // Remove descendants from map if it was a directory
-                            if (item.IsDirectory) {
-                                var descendantPaths = pathToTreeViewItemMap.Keys
-                                    .Where(k => k.StartsWith(item.Path + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                                    .ToList();
-                                foreach(var descendantPath in descendantPaths) {
-                                    // Also try to remove from selectedItems if somehow a child was still selected
-                                    if (pathToTreeViewItemMap.TryGetValue(descendantPath, out var descTvi) && descTvi.Tag is FileSystemItem descFsi)
-                                    {
-                                        selectedItems.Remove(descFsi);
+                            // --- Clean up TreeView and Map ---
+                            if (pathToTreeViewItemMap.TryGetValue(item.Path, out var treeViewItemToDelete))
+                            {
+                                // Remove descendants from map if it was a directory before removing the directory itself
+                                if (item.IsDirectory) {
+                                    var descendantPaths = pathToTreeViewItemMap.Keys
+                                        .Where(k => k.StartsWith(item.Path + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                                        .ToList();
+                                    foreach(var descendantPath in descendantPaths) {
+                                        // Also try to remove from selectedItems if somehow a child was still selected (should be cleared already)
+                                        if (pathToTreeViewItemMap.TryGetValue(descendantPath, out var descTvi) && descTvi.Tag is FileSystemItem descFsi)
+                                        {
+                                            // selectedItems.Remove(descFsi); // Selection already cleared
+                                        }
+                                        pathToTreeViewItemMap.Remove(descendantPath);
                                     }
-                                    pathToTreeViewItemMap.Remove(descendantPath);
+                                }
+                                // Remove the item itself from the map
+                                pathToTreeViewItemMap.Remove(item.Path);
+
+                                // Remove the TreeViewItem from its parent in the UI
+                                if (treeViewItemToDelete.Parent is TreeViewItem parentTvi) {
+                                    parentTvi.Items.Remove(treeViewItemToDelete);
+                                } else if (treeViewFiles.Items.Contains(treeViewItemToDelete)) {
+                                     // Should only happen if deleting the root node (not typical)
+                                    treeViewFiles.Items.Remove(treeViewItemToDelete);
                                 }
                             }
+                            // --- End TreeView/Map Cleanup ---
 
-                            if (parentPath != null && parentPath.StartsWith(rootPath??"__INVALID__", StringComparison.OrdinalIgnoreCase)) // Only refresh parents within the root
+
+                            if (parentPath != null && parentPath.StartsWith(rootPath??"__INVALID__", StringComparison.OrdinalIgnoreCase)) // Only track parents within the root
                                 parentPathsToRefresh.Add(parentPath);
                             deleteCount++;
                         }
@@ -1321,34 +1566,45 @@ namespace MakingVibe
                         {
                             MessageBox.Show($"No se pudo eliminar '{item.Name}'.\nError inesperado: {itemEx.Message}", "Error al Eliminar", MessageBoxButton.OK, MessageBoxImage.Error);
                         }
-                    }
+                    } // End foreach loop
 
-                    // Refresh Parent Nodes or Full Tree
-                    if (parentPathsToRefresh.Any() && !string.IsNullOrEmpty(rootPath))
+                    // --- Refresh Parent Nodes or Full Tree ---
+                    // Avoid full refresh if we can just update parents.
+                    if (deleteCount > 0 && !string.IsNullOrEmpty(rootPath))
                     {
-                        bool refreshedOk = false;
-                        foreach (var parentPath in parentPathsToRefresh)
-                        {
-                            if (pathToTreeViewItemMap.TryGetValue(parentPath, out var parentNode))
-                            {
-                                if (parentNode.Tag is FileSystemItem parentFsi)
-                                {
-                                    RefreshNodeUI(parentNode, parentFsi);
-                                    refreshedOk = true;
-                                }
-                            }
-                        }
-                        // If a parent wasn't found in the map (maybe it was the root itself) or refresh failed, consider full refresh
-                        if (!refreshedOk)
-                        {
-                             LoadDirectoryTreeUI(rootPath);
-                        }
+                         bool needFullRefresh = false;
+                         if (parentPathsToRefresh.Any())
+                         {
+                             foreach (var parentPath in parentPathsToRefresh)
+                             {
+                                 if (pathToTreeViewItemMap.TryGetValue(parentPath, out var parentNode))
+                                 {
+                                     if (parentNode.Tag is FileSystemItem parentFsi)
+                                     {
+                                         // Refresh the node - this re-applies filters etc.
+                                         RefreshNodeUI(parentNode, parentFsi);
+                                     } else needFullRefresh = true; // Tag was wrong? Refresh all.
+                                 }
+                                 else if (parentPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
+                                 {
+                                      // Parent was root itself, need full refresh
+                                     needFullRefresh = true;
+                                 }
+                                 else needFullRefresh = true; // Parent node not found in map? Refresh all.
+
+                                 if (needFullRefresh) break; // Stop iterating if full refresh is needed
+                             }
+                         } else {
+                             // Items deleted were likely directly under root, or parentPaths set was empty for some reason
+                             needFullRefresh = true;
+                         }
+
+                         if (needFullRefresh)
+                         {
+                             LoadDirectoryTreeUI(rootPath); // Fallback to full refresh
+                         }
                     }
-                    else if (deleteCount > 0 && !string.IsNullOrEmpty(rootPath))
-                    {
-                        // If no specific parent needed refresh (e.g., deleted item was directly under root)
-                        LoadDirectoryTreeUI(rootPath);
-                    }
+                    // --- End Refresh Logic ---
 
 
                     UpdateStatusBarAndButtonStates($"{deleteCount} elemento(s) eliminado(s).");
@@ -1362,7 +1618,11 @@ namespace MakingVibe
                 finally
                 {
                     this.Cursor = Cursors.Arrow;
-                    UpdateStatusBarAndButtonStates(); // Final status update
+                    // Re-evaluate status bar (selection count should be 0)
+                    UpdateStatusBarAndButtonStates();
+                    // Update filters potentially if deleted files were the last of their type
+                    // This happens automatically if we did a full refresh. If only nodes were refreshed,
+                    // we might need an explicit call to update the filter counts, but LoadDirectoryTreeUI handles it.
                 }
             }
         }
@@ -1389,6 +1649,7 @@ namespace MakingVibe
                 if (newName.Equals(itemToRename.Name, StringComparison.Ordinal)) return; // No change
 
                 string newPath = _fileSystemService.CombinePath(directory, newName);
+                string newExtension = itemToRename.IsDirectory ? itemToRename.Type : Path.GetExtension(newPath); // Get new extension if file
 
                 if ((itemToRename.IsDirectory && _fileSystemService.DirectoryExists(newPath)) || (!itemToRename.IsDirectory && _fileSystemService.FileExists(newPath)))
                 {
@@ -1401,7 +1662,7 @@ namespace MakingVibe
                 string oldNameForStatus = itemToRename.Name;
 
                  // --- Cleanup map and selection before actual rename ---
-                 pathToTreeViewItemMap.Remove(oldPath);
+                 if (pathToTreeViewItemMap.ContainsKey(oldPath)) pathToTreeViewItemMap.Remove(oldPath);
                  if(itemToRename.IsDirectory) {
                       var descendantPaths = pathToTreeViewItemMap.Keys
                            .Where(k => k.StartsWith(oldPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
@@ -1424,16 +1685,26 @@ namespace MakingVibe
                           {
                              RefreshNodeUI(parentNode, parentFsi); // Refresh the parent
 
-                             // --- Try to select the newly renamed item ---
+                             // --- Try to select the newly renamed item IF it's still visible after filter ---
                               Dispatcher.InvokeAsync(() => {
-                                  if(pathToTreeViewItemMap.TryGetValue(newPath, out var newTvi))
+                                   bool stillVisible = true;
+                                   if (!itemToRename.IsDirectory && _activeFileExtensionsFilter.Any() && !_activeFileExtensionsFilter.Contains(newExtension))
+                                   {
+                                       stillVisible = false; // File renamed to an extension that is filtered out
+                                   }
+
+                                   if(stillVisible && pathToTreeViewItemMap.TryGetValue(newPath, out var newTvi))
                                   {
                                       newTvi.IsSelected = true; // Make it the selected item in the TreeView
-                                      // Find checkbox and check it if needed
+                                      // Find checkbox and check it
                                       if (newTvi.Header is Grid headerGrid) {
                                           var cb = headerGrid.Children.OfType<CheckBox>().FirstOrDefault();
                                           if (cb != null) cb.IsChecked = true; // This will re-add to selectedItems via event
                                       }
+                                      newTvi.BringIntoView(); // Scroll to the new item
+                                  } else {
+                                       // If item is no longer visible due to filter, clear selection display
+                                       UpdateStatusBarAndButtonStates($"'{oldNameForStatus}' renombrado a '{newName}' (filtrado).");
                                   }
                               }, System.Windows.Threading.DispatcherPriority.Background);
                              // --- End Try select ---
@@ -1473,8 +1744,47 @@ namespace MakingVibe
                 {
                     this.Cursor = Cursors.Arrow;
                     UpdateStatusBarAndButtonStates(); // Final status/button update
+                    // Update filter list if a file's extension changed
+                     if (!itemToRename.IsDirectory && !string.IsNullOrEmpty(rootPath))
+                     {
+                         // Simple approach: just reload the whole tree/filter list
+                          // A more optimized way would be to adjust counts directly in FileFilters
+                         // LoadDirectoryTreeUI(rootPath);
+                         // Let's try the optimized way:
+                         var oldExtension = itemToRename.Type;
+                         AdjustFilterCount(oldExtension, -1);
+                         AdjustFilterCount(newExtension, 1);
+                     }
                 }
             }
+        }
+
+        // Helper to adjust filter counts without full reload
+        private void AdjustFilterCount(string extension, int change)
+        {
+             var filterItem = FileFilters.FirstOrDefault(f => f.Extension.Equals(extension, StringComparison.OrdinalIgnoreCase));
+             if (filterItem != null)
+             {
+                 filterItem.Count += change;
+                 if (filterItem.Count <= 0)
+                 {
+                      // Optionally remove filter if count reaches zero (or keep it shown as 0)
+                      // FileFilters.Remove(filterItem);
+                      filterItem.Count = 0; // Let's just show 0 for now
+                 }
+             }
+             else if (change > 0) // Add new filter if count becomes positive
+             {
+                 // Need to re-sort or add in sorted order? For now, just add.
+                 // Check if previously removed?
+                  var newFilter = new FileFilterItem { Extension = extension, Count = change, IsEnabled = true }; // Assume enabled by default
+                  FileFilters.Add(newFilter);
+                   // Re-sort the list after adding
+                   var sortedFilters = FileFilters.OrderBy(f => f.Extension).ToList();
+                   FileFilters.Clear();
+                   foreach (var f in sortedFilters) FileFilters.Add(f);
+
+             }
         }
 
 
@@ -1658,11 +1968,10 @@ namespace MakingVibe
                     }
 
                     // Determine if children are loaded (i.e., not the dummy "Cargando..." node)
-                    bool childrenLoaded = tvi.HasItems && !(tvi.Items.Count == 1 && tvi.Items[0] is string);
+                    bool childrenLoadedOrDummy = tvi.HasItems; // Simpler check: just see if it has any items
 
-                    // If expanding: Recurse only if the item is now expanded AND children are loaded OR it hasn't tried loading yet.
-                    // This allows expansion to cascade even through not-yet-loaded nodes.
-                    if (expand && tvi.IsExpanded && tvi.HasItems) // Check HasItems to avoid recursing empty folders
+                    // If expanding: Recurse only if the item is now expanded AND has items (could be dummy)
+                    if (expand && tvi.IsExpanded && childrenLoadedOrDummy)
                     {
                         // We need to ensure children are loaded before recursing *if* they weren't loaded before
                         // Setting IsExpanded=true should trigger loading if needed via the Expanded event.
@@ -1670,7 +1979,8 @@ namespace MakingVibe
                         // Direct recursion might happen before children are available.
                         // A more robust solution would involve awaiting loading, but that complicates this method significantly.
                         // For now, we'll recurse directly. If ExpandAll is clicked again, deeper levels will load.
-                        CollapseOrExpandNodes(tvi.Items, expand);
+                        // Check again if items are present after potential async load? No, recurse anyway.
+                         CollapseOrExpandNodes(tvi.Items, expand);
                     }
                     // If collapsing: Always recurse into children (if any exist).
                     else if (!expand && tvi.HasItems)
@@ -1742,7 +2052,7 @@ namespace MakingVibe
         }
 
 
-        // --- NEW: ListView Double-Click Handler for Editing Fragments ---
+        // --- ListView Double-Click Handler for Editing Fragments ---
         private void listViewFragments_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
             // Ensure the source of the double click is within a ListViewItem
@@ -1791,11 +2101,62 @@ namespace MakingVibe
                 // No action needed if Cancel was clicked
             }
         }
-        // --- END NEW ---
+        // --- END Fragment Edit ---
+
+
+        // --- File Filter Tab Handlers ---
+
+        private void SelectAllFilters_Click(object sender, RoutedEventArgs e)
+        {
+            foreach (var filter in FileFilters)
+            {
+                filter.IsEnabled = true;
+            }
+            // Optionally apply immediately or wait for Apply button
+            // ApplyFilters();
+        }
+
+        private void DeselectAllFilters_Click(object sender, RoutedEventArgs e)
+        {
+            foreach (var filter in FileFilters)
+            {
+                filter.IsEnabled = false;
+            }
+            // Optionally apply immediately or wait for Apply button
+            // ApplyFilters();
+        }
+
+        private void ApplyFilters_Click(object sender, RoutedEventArgs e)
+        {
+            ApplyFiltersAndReloadTree();
+        }
+
+        /// <summary>
+        /// Updates the active filter set based on UI choices and reloads the TreeView.
+        /// </summary>
+        private void ApplyFiltersAndReloadTree()
+        {
+             if (string.IsNullOrEmpty(rootPath)) return; // No root to load
+
+             UpdateStatusBarAndButtonStates("Aplicando filtros y recargando árbol...");
+             this.Cursor = Cursors.Wait;
+
+             // Update the active filter set
+             _activeFileExtensionsFilter = FileFilters
+                 .Where(f => f.IsEnabled)
+                 .Select(f => f.Extension)
+                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+             // Reload the entire directory tree using the new active filter
+             // LoadDirectoryTreeUI already uses _activeFileExtensionsFilter
+             LoadDirectoryTreeUI(rootPath);
+
+             this.Cursor = Cursors.Arrow;
+             UpdateStatusBarAndButtonStates("Filtros aplicados y árbol recargado.");
+        }
+
+        // --- END Filter Tab Handlers ---
 
 
     } // End class MainWindow
 } // End namespace MakingVibe
-
-
-

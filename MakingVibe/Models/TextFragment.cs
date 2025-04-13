@@ -1,4 +1,8 @@
-﻿// MakingVibe/Models/TextFragment.cs
+﻿/*
+ * MakingVibe/Models/TextFragment.cs
+ * No changes needed in this file.
+ */
+// MakingVibe/Models/TextFragment.cs
 using System.ComponentModel; // Required for INotifyPropertyChanged
 using System.Runtime.CompilerServices; // Required for CallerMemberName
 

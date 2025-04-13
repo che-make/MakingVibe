@@ -1,3 +1,7 @@
+/*
+ * MakingVibe/Models/FileSystemItem.cs
+ * No changes needed in this file.
+ */
 using System;
 using System.Diagnostics.CodeAnalysis; // For MaybeNullWhen
 
