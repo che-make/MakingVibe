@@ -81,6 +81,9 @@ namespace MakingVibe
             // Update status bar when selection changes
             selectedItems.CollectionChanged += (s, e) => UpdateStatusBarAndButtonStates();
 
+            // Listen for text changes in the main prompt to update button state
+            txtMainPrompt.TextChanged += (s, e) => UpdateStatusBarAndButtonStates();
+
             // Set initial state
             UpdateStatusBarAndButtonStates("Listo.");
             SetWindowTitleFromGit();
@@ -223,12 +226,19 @@ namespace MakingVibe
         // --- Context Menu ---
         private void TreeViewContextMenu_ContextMenuOpening(object sender, ContextMenuEventArgs e)
         {
+            // Note: The logic here primarily enables/disables context menu items based on TreeView selection.
+            // The toolbar button's state is handled by UpdateStatusBarAndButtonStates.
             bool isItemSelected = treeViewFiles.SelectedItem != null;
             FileSystemItem? selectedFsi = (treeViewFiles.SelectedItem as TreeViewItem)?.Tag as FileSystemItem;
             bool isTextFileSelected = selectedFsi != null && !selectedFsi.IsDirectory && FileHelper.IsTextFile(selectedFsi.Path);
 
-            // Enable actions based on selection state
-            ctxCopyText.IsEnabled = selectedItems.Count > 0 && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path));
+            // Enable actions based on selection state for the CONTEXT MENU
+            // Check if there's something to copy (either selected files or a prompt)
+             bool canCopyAnything = (selectedItems.Count > 0 && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path)))
+                                 || !string.IsNullOrWhiteSpace(txtMainPrompt.Text); // Simplified check for prompt content
+            ctxCopyText.IsEnabled = canCopyAnything;
+
+            // Other context menu items depend only on TreeView selection
             ctxRename.IsEnabled = selectedItems.Count == 1 && selectedFsi != null;
             ctxDelete.IsEnabled = selectedItems.Count > 0;
             ctxRefreshNode.IsEnabled = isItemSelected && selectedFsi != null && selectedFsi.IsDirectory;
@@ -827,10 +837,15 @@ namespace MakingVibe
                  bool hasSelection = selectedItems.Count > 0;
                  bool hasSingleSelection = selectedItems.Count == 1;
                  bool canPaste = clipboardItems.Count > 0 && treeViewFiles.SelectedItem is TreeViewItem; // Simplified paste check
-                 bool canCopyText = hasSelection && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path));
+                 // **MODIFIED**: Check if copy is possible due to file selection OR non-empty prompt
+                 bool canCopyFiles = hasSelection && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path));
+                 bool canCopyPrompt = !string.IsNullOrWhiteSpace(txtMainPrompt.Text); // Simple check: is main prompt non-empty?
+                 bool canCopyAiText = canCopyFiles || canCopyPrompt;
+
                  bool treeHasRoot = treeViewFiles.HasItems; // Check if the tree has at least the root item
 
-                 btnCopyText.IsEnabled = canCopyText;
+
+                 btnCopyText.IsEnabled = canCopyAiText; // **MODIFIED** Use the combined condition
                  btnCopy.IsEnabled = hasSelection;
                  btnCut.IsEnabled = hasSelection;
                  btnDelete.IsEnabled = hasSelection;
@@ -884,26 +899,12 @@ namespace MakingVibe
 
         // --- AI Text Copy Action (UI Coordination) ---
 
+        // **MODIFIED**: Added logic to handle the case where no files are selected.
         private async void btnCopyText_Click(object sender, RoutedEventArgs e)
         {
-            if (selectedItems.Count == 0)
-            {
-                MessageBox.Show("No hay archivos o carpetas seleccionados.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            if (string.IsNullOrEmpty(rootPath))
-            {
-                 MessageBox.Show("No se ha establecido una carpeta raíz.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Error);
-                 return;
-            }
-
-            // Use a local copy of selected items in case the selection changes during async operation
-            var itemsToProcess = selectedItems.ToList();
-
-            // Get main prompt AND selected fragments
+            // 1. Get main prompt AND selected fragments text (always needed)
             string mainPrompt = txtMainPrompt.Text.Trim();
             var selectedFragmentsText = new StringBuilder();
-
             // Iterate through ListView items to find checked fragments
             foreach (var item in listViewFragments.Items)
             {
@@ -917,13 +918,68 @@ namespace MakingVibe
                         var checkBox = FindVisualChild<CheckBox>(container);
                         if (checkBox != null && checkBox.IsChecked == true)
                         {
-                            // *** Use the Text property of the fragment ***
                             selectedFragmentsText.AppendLine(fragment.Text);
                             selectedFragmentsText.AppendLine(); // Add blank line between fragments
                         }
                     }
                 }
             }
+            string fragmentsString = selectedFragmentsText.ToString().TrimEnd(); // Trim trailing newline
+
+            // --- NEW: Handle case where NO files are selected ---
+            if (selectedItems.Count == 0)
+            {
+                var promptOnlyOutputBuilder = new StringBuilder();
+
+                // 1. Add Main Prompt (if any)
+                if (!string.IsNullOrEmpty(mainPrompt))
+                {
+                    promptOnlyOutputBuilder.AppendLine(mainPrompt);
+                    promptOnlyOutputBuilder.AppendLine(); // Add a blank line for separation
+                }
+
+                // 2. Add Selected Fragments (if any)
+                if (!string.IsNullOrEmpty(fragmentsString))
+                {
+                     promptOnlyOutputBuilder.AppendLine("--- Included Fragments ---"); // Optional separator
+                     promptOnlyOutputBuilder.AppendLine(fragmentsString);
+                     promptOnlyOutputBuilder.AppendLine("--- End Fragments ---");      // Optional separator
+                     // No extra blank line needed here if it's the last thing
+                }
+
+                string finalPromptOnlyText = promptOnlyOutputBuilder.ToString().Trim(); // Trim potential leading/trailing whitespace
+
+                if (string.IsNullOrEmpty(finalPromptOnlyText))
+                {
+                    UpdateStatusBarAndButtonStates("Prompt está vacío, nada que copiar.");
+                    MessageBox.Show("El prompt principal y los fragmentos están vacíos. No hay nada que copiar.", "Copiar Prompt", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                try
+                {
+                    Clipboard.SetText(finalPromptOnlyText);
+                    UpdateStatusBarAndButtonStates("Prompt copiado al portapapeles.");
+                    MessageBox.Show("El prompt principal y los fragmentos seleccionados han sido copiados al portapapeles.", "Copiar Prompt", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception clipEx)
+                {
+                     Debug.WriteLine($"Clipboard Error (Prompt Only): {clipEx.Message}");
+                     MessageBox.Show($"No se pudo copiar el prompt al portapapeles.\nError: {clipEx.Message}", "Error al Copiar", MessageBoxButton.OK, MessageBoxImage.Warning);
+                     UpdateStatusBarAndButtonStates("Error al copiar prompt.");
+                }
+                return; // Exit the method after copying only the prompt
+            }
+
+            // --- ORIGINAL LOGIC: Files ARE selected ---
+            if (string.IsNullOrEmpty(rootPath))
+            {
+                 MessageBox.Show("No se ha establecido una carpeta raíz (necesaria para generar el mapa de archivos).", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Error);
+                 return;
+            }
+
+            // Use a local copy of selected items in case the selection changes during async operation
+            var itemsToProcess = selectedItems.ToList();
 
             this.Cursor = Cursors.Wait;
             statusBarText.Text = "Recopilando archivos de texto...";
@@ -941,7 +997,7 @@ namespace MakingVibe
                     return; // Exit early
                 }
 
-                // Prepend main prompt and selected fragments
+                // Build the final combined output
                 var finalOutputBuilder = new StringBuilder();
 
                 // 1. Add Main Prompt (if any)
@@ -952,13 +1008,10 @@ namespace MakingVibe
                 }
 
                 // 2. Add Selected Fragments (if any)
-                string fragmentsString = selectedFragmentsText.ToString().TrimEnd(); // Trim trailing newline
                 if (!string.IsNullOrEmpty(fragmentsString))
                 {
-                     finalOutputBuilder.AppendLine("--- Included Fragments ---"); // Optional separator
                      finalOutputBuilder.AppendLine(fragmentsString);
-                     finalOutputBuilder.AppendLine("--- End Fragments ---");      // Optional separator
-                     finalOutputBuilder.AppendLine(); // Add a blank line for separation
+                     finalOutputBuilder.AppendLine();
                 }
 
 
@@ -969,7 +1022,12 @@ namespace MakingVibe
 
 
                 // Copy to clipboard (must be done on UI thread)
-                 try { Clipboard.SetText(finalClipboardText); } catch (Exception clipEx) {
+                 try
+                 {
+                      Clipboard.SetText(finalClipboardText);
+                 }
+                 catch (Exception clipEx)
+                 {
                       Debug.WriteLine($"Clipboard Error: {clipEx.Message}");
                       MessageBox.Show($"No se pudo copiar al portapapeles. El contenido puede ser demasiado grande.\nError: {clipEx.Message}", "Error al Copiar", MessageBoxButton.OK, MessageBoxImage.Warning);
                       // Don't show the success message if clipboard failed
