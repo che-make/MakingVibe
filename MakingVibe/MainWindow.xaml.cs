@@ -1015,7 +1015,6 @@ namespace MakingVibe
                     // We still might want to copy the prompt/fragments.
                     var promptOnlyOutputBuilder = new StringBuilder();
                     if (!string.IsNullOrEmpty(mainPrompt)) { promptOnlyOutputBuilder.AppendLine(mainPrompt).AppendLine(); }
-                    if (!string.IsNullOrEmpty(fragmentsString)) { promptOnlyOutputBuilder.AppendLine("--- Included Fragments ---").AppendLine(fragmentsString).AppendLine("--- End Fragments ---"); }
                     string finalPromptOnlyText = promptOnlyOutputBuilder.ToString().Trim();
 
                     if (string.IsNullOrEmpty(finalPromptOnlyText))
@@ -1055,7 +1054,6 @@ namespace MakingVibe
                 if (!string.IsNullOrEmpty(fragmentsString))
                 {
                      // Add separator only if main prompt was also present
-                     if (!string.IsNullOrEmpty(mainPrompt)) finalOutputBuilder.AppendLine("--- Included Fragments ---");
                      finalOutputBuilder.AppendLine(fragmentsString);
                      finalOutputBuilder.AppendLine(); // Add a blank line after fragments
                 }
