@@ -11,17 +11,20 @@ using System.Text.Json; // Required for JSON serialization
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Input;
+using System.Windows.Input; // For MouseButtonEventArgs, KeyEventArgs, Cursors
 using System.Windows.Media;
 using Brushes = System.Windows.Media.Brushes;
 using CheckBox = System.Windows.Controls.CheckBox;
 using Clipboard = System.Windows.Clipboard;
 using Cursors = System.Windows.Input.Cursors;
+//using Cursors = System.Windows.Input.Cursors; // No longer needed due to using System.Windows.Input above
 using HorizontalAlignment = System.Windows.HorizontalAlignment;
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+//using KeyEventArgs = System.Windows.Input.KeyEventArgs; // No longer needed due to using System.Windows.Input above
 using ListViewItem = System.Windows.Controls.ListViewItem;
 using MessageBox = System.Windows.MessageBox;
 using Orientation = System.Windows.Controls.Orientation;
+using RoutedEventArgs = System.Windows.RoutedEventArgs;
 using WinForms = System.Windows.Forms; // Alias for FolderBrowserDialog
 
 
@@ -235,7 +238,8 @@ namespace MakingVibe
             // Enable actions based on selection state for the CONTEXT MENU
             // Check if there's something to copy (either selected files or a prompt)
              bool canCopyAnything = (selectedItems.Count > 0 && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path)))
-                                 || !string.IsNullOrWhiteSpace(txtMainPrompt.Text); // Simplified check for prompt content
+                                 || !string.IsNullOrWhiteSpace(txtMainPrompt.Text)
+                                 || Fragments.Any(); // Also consider if any fragments exist to be selected
             ctxCopyText.IsEnabled = canCopyAnything;
 
             // Other context menu items depend only on TreeView selection
@@ -837,10 +841,27 @@ namespace MakingVibe
                  bool hasSelection = selectedItems.Count > 0;
                  bool hasSingleSelection = selectedItems.Count == 1;
                  bool canPaste = clipboardItems.Count > 0 && treeViewFiles.SelectedItem is TreeViewItem; // Simplified paste check
-                 // **MODIFIED**: Check if copy is possible due to file selection OR non-empty prompt
+
+                 // Determine if any fragments are selected via checkbox
+                 bool anyFragmentSelected = false;
+                 foreach (var item in listViewFragments.Items)
+                 {
+                     var container = listViewFragments.ItemContainerGenerator.ContainerFromItem(item) as ListViewItem;
+                     if (container != null)
+                     {
+                         var checkBox = FindVisualChild<CheckBox>(container);
+                         if (checkBox != null && checkBox.IsChecked == true)
+                         {
+                             anyFragmentSelected = true;
+                             break;
+                         }
+                     }
+                 }
+
                  bool canCopyFiles = hasSelection && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path));
                  bool canCopyPrompt = !string.IsNullOrWhiteSpace(txtMainPrompt.Text); // Simple check: is main prompt non-empty?
-                 bool canCopyAiText = canCopyFiles || canCopyPrompt;
+                 bool canCopyAiText = canCopyFiles || canCopyPrompt || anyFragmentSelected; // MODIFIED: Also allow copy if fragments are selected
+
 
                  bool treeHasRoot = treeViewFiles.HasItems; // Check if the tree has at least the root item
 
@@ -926,7 +947,7 @@ namespace MakingVibe
             }
             string fragmentsString = selectedFragmentsText.ToString().TrimEnd(); // Trim trailing newline
 
-            // --- NEW: Handle case where NO files are selected ---
+            // --- Handle case where NO files are selected (but prompt/fragments might be) ---
             if (selectedItems.Count == 0)
             {
                 var promptOnlyOutputBuilder = new StringBuilder();
@@ -951,27 +972,27 @@ namespace MakingVibe
 
                 if (string.IsNullOrEmpty(finalPromptOnlyText))
                 {
-                    UpdateStatusBarAndButtonStates("Prompt está vacío, nada que copiar.");
-                    MessageBox.Show("El prompt principal y los fragmentos están vacíos. No hay nada que copiar.", "Copiar Prompt", MessageBoxButton.OK, MessageBoxImage.Information);
+                    UpdateStatusBarAndButtonStates("Nada seleccionado para copiar.");
+                    MessageBox.Show("No hay archivos seleccionados, ni prompt principal, ni fragmentos seleccionados. No hay nada que copiar.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
 
                 try
                 {
                     Clipboard.SetText(finalPromptOnlyText);
-                    UpdateStatusBarAndButtonStates("Prompt copiado al portapapeles.");
-                    MessageBox.Show("El prompt principal y los fragmentos seleccionados han sido copiados al portapapeles.", "Copiar Prompt", MessageBoxButton.OK, MessageBoxImage.Information);
+                    UpdateStatusBarAndButtonStates("Prompt y/o fragmentos copiados al portapapeles.");
+                    MessageBox.Show("El prompt principal y/o los fragmentos seleccionados han sido copiados al portapapeles.", "Texto Copiado", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
                 catch (Exception clipEx)
                 {
-                     Debug.WriteLine($"Clipboard Error (Prompt Only): {clipEx.Message}");
-                     MessageBox.Show($"No se pudo copiar el prompt al portapapeles.\nError: {clipEx.Message}", "Error al Copiar", MessageBoxButton.OK, MessageBoxImage.Warning);
-                     UpdateStatusBarAndButtonStates("Error al copiar prompt.");
+                     Debug.WriteLine($"Clipboard Error (Prompt/Fragment Only): {clipEx.Message}");
+                     MessageBox.Show($"No se pudo copiar el texto al portapapeles.\nError: {clipEx.Message}", "Error al Copiar", MessageBoxButton.OK, MessageBoxImage.Warning);
+                     UpdateStatusBarAndButtonStates("Error al copiar texto.");
                 }
-                return; // Exit the method after copying only the prompt
+                return; // Exit the method after copying only the prompt/fragments
             }
 
-            // --- ORIGINAL LOGIC: Files ARE selected ---
+            // --- ORIGINAL LOGIC: Files ARE selected (prompt/fragments might also be included) ---
             if (string.IsNullOrEmpty(rootPath))
             {
                  MessageBox.Show("No se ha establecido una carpeta raíz (necesaria para generar el mapa de archivos).", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -992,12 +1013,37 @@ namespace MakingVibe
 
                 if (result == null)
                 {
-                    MessageBox.Show("No se encontraron archivos de texto válidos en la selección.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
-                    UpdateStatusBarAndButtonStates("No se encontraron archivos de texto."); // Update status
+                    // This case means files were selected, but NONE were text files.
+                    // We still might want to copy the prompt/fragments.
+                    var promptOnlyOutputBuilder = new StringBuilder();
+                    if (!string.IsNullOrEmpty(mainPrompt)) { promptOnlyOutputBuilder.AppendLine(mainPrompt).AppendLine(); }
+                    if (!string.IsNullOrEmpty(fragmentsString)) { promptOnlyOutputBuilder.AppendLine("--- Included Fragments ---").AppendLine(fragmentsString).AppendLine("--- End Fragments ---"); }
+                    string finalPromptOnlyText = promptOnlyOutputBuilder.ToString().Trim();
+
+                    if (string.IsNullOrEmpty(finalPromptOnlyText))
+                    {
+                        MessageBox.Show("No se encontraron archivos de texto válidos en la selección, y el prompt/fragmentos están vacíos.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
+                        UpdateStatusBarAndButtonStates("No se encontraron archivos de texto.");
+                    }
+                    else
+                    {
+                        try
+                        {
+                            Clipboard.SetText(finalPromptOnlyText);
+                            UpdateStatusBarAndButtonStates("Prompt y/o fragmentos copiados (sin archivos de texto).");
+                            MessageBox.Show("No se encontraron archivos de texto en la selección. Se ha copiado solo el prompt principal y/o los fragmentos seleccionados al portapapeles.", "Texto Copiado", MessageBoxButton.OK, MessageBoxImage.Information);
+                        }
+                        catch (Exception clipEx)
+                        {
+                             Debug.WriteLine($"Clipboard Error (Prompt/Fragment Only after file check): {clipEx.Message}");
+                             MessageBox.Show($"No se pudo copiar el texto al portapapeles.\nError: {clipEx.Message}", "Error al Copiar", MessageBoxButton.OK, MessageBoxImage.Warning);
+                             UpdateStatusBarAndButtonStates("Error al copiar texto.");
+                        }
+                    }
                     return; // Exit early
                 }
 
-                // Build the final combined output
+                // Build the final combined output (Prompt + Fragments + FileMap + FileContents)
                 var finalOutputBuilder = new StringBuilder();
 
                 // 1. Add Main Prompt (if any)
@@ -1010,10 +1056,11 @@ namespace MakingVibe
                 // 2. Add Selected Fragments (if any)
                 if (!string.IsNullOrEmpty(fragmentsString))
                 {
+                     // Add separator only if main prompt was also present
+                     if (!string.IsNullOrEmpty(mainPrompt)) finalOutputBuilder.AppendLine("--- Included Fragments ---");
                      finalOutputBuilder.AppendLine(fragmentsString);
-                     finalOutputBuilder.AppendLine();
+                     finalOutputBuilder.AppendLine(); // Add a blank line after fragments
                 }
-
 
                 // 3. Append the map and contents generated by the service
                 finalOutputBuilder.Append(result.Value.Output);
@@ -1036,7 +1083,7 @@ namespace MakingVibe
 
 
                 UpdateStatusBarAndButtonStates($"Contenido de {result.Value.TextFileCount} archivo(s) copiado al portapapeles.");
-                MessageBox.Show($"Se ha copiado el prompt principal, el texto de los fragmentos seleccionados (si los hay), el mapa y el contenido de {result.Value.TextFileCount} archivo(s) de texto al portapapeles.", "Copiar Texto (AI)", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show($"Se ha copiado el prompt principal, el texto de los fragmentos seleccionados (si los hay), el mapa y el contenido de {result.Value.TextFileCount} archivo(s) de texto al portapapeles.", "Texto Copiado", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
@@ -1529,6 +1576,7 @@ namespace MakingVibe
                     foreach (var fragment in loadedFragments)
                     {
                         // Basic check if loaded data is valid before adding
+                        // Allow empty text, but require title
                         if (!string.IsNullOrEmpty(fragment.Title) && fragment.Text != null)
                         {
                             Fragments.Add(fragment);
@@ -1698,5 +1746,60 @@ namespace MakingVibe
         }
 
 
+        // --- NEW: ListView Double-Click Handler for Editing Fragments ---
+        private void listViewFragments_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            // Ensure the source of the double click is within a ListViewItem
+            var originalSource = e.OriginalSource as DependencyObject;
+            ListViewItem? listViewItem = null;
+
+            // Traverse up the visual tree to find the ListViewItem
+            while (originalSource != null && originalSource != listViewFragments)
+            {
+                if (originalSource is ListViewItem item)
+                {
+                    listViewItem = item;
+                    break;
+                }
+                // Check if the parent is null before getting it
+                var parent = VisualTreeHelper.GetParent(originalSource);
+                if (parent == null) break; // Stop if we reach the top without finding ListViewItem
+                originalSource = parent;
+            }
+
+            // Check if we found a ListViewItem and it has a TextFragment context
+            if (listViewItem?.DataContext is TextFragment fragmentToEdit)
+            {
+                // Create and show the dialog
+                var dialog = new EditFragmentDialog(fragmentToEdit) { Owner = this };
+                bool? dialogResult = dialog.ShowDialog();
+
+                // If the user clicked Save
+                if (dialogResult == true)
+                {
+                    // Get the edited data
+                    var editedData = dialog.EditedFragment;
+
+                    // Update the original fragment in the ObservableCollection
+                    // Since TextFragment now implements INotifyPropertyChanged,
+                    // updating properties should refresh the UI automatically.
+                    fragmentToEdit.Title = editedData.Title;
+                    fragmentToEdit.Text = editedData.Text;
+
+                    // Persist the changes
+                    SaveFragments();
+
+                    // Optional: Provide user feedback
+                    UpdateStatusBarAndButtonStates($"Fragmento '{fragmentToEdit.Title}' actualizado.");
+                }
+                // No action needed if Cancel was clicked
+            }
+        }
+        // --- END NEW ---
+
+
     } // End class MainWindow
 } // End namespace MakingVibe
+
+
+

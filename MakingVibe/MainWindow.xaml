@@ -189,9 +189,11 @@
 
                                 <TextBlock Grid.Row="0" Text="Fragmentos Guardados (Seleccione para incluir):" FontWeight="SemiBold" Margin="0,5,0,5"/>
 
+                                <!-- MODIFIED: Added MouseDoubleClick handler -->
                                 <ListView x:Name="listViewFragments" Grid.Row="1" ItemsSource="{Binding Fragments}"
                                           BorderBrush="#CCCCCC" BorderThickness="1"
-                                          SelectionMode="Extended" HorizontalContentAlignment="Stretch">
+                                          SelectionMode="Extended" HorizontalContentAlignment="Stretch"
+                                          MouseDoubleClick="listViewFragments_MouseDoubleClick">
                                      <ListView.ItemTemplate>
                                         <DataTemplate DataType="{x:Type models:TextFragment}">
                                             <Grid HorizontalAlignment="Stretch">
@@ -202,7 +204,7 @@
                                                 <!-- Checkbox to control inclusion -->
                                                 <CheckBox x:Name="cbIncludeFragment" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0"
                                                           ToolTip="Incluir este fragmento al copiar"/>
-                                                <!-- MODIFIED: Display Title, ToolTip shows Text -->
+                                                <!-- Display Title, ToolTip shows Text -->
                                                 <TextBlock Grid.Column="1" Text="{Binding Title}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
                                                            VerticalAlignment="Center" ToolTip="{Binding Text}" />
                                             </Grid>
