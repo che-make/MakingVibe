@@ -23,6 +23,21 @@
         <Compile Update="EditFragmentDialog.xaml.cs">
             <DependentUpon>EditFragmentDialog.xaml</DependentUpon>
         </Compile>
+        <Compile Update="MainWindow.TreeView.cs">
+          <DependentUpon>MainWindow.xaml</DependentUpon>
+        </Compile>
+        <Compile Update="MainWindow.PromptTab.cs">
+          <DependentUpon>MainWindow.xaml</DependentUpon>
+        </Compile>
+        <Compile Update="MainWindow.PreviewTab.cs">
+          <DependentUpon>MainWindow.xaml</DependentUpon>
+        </Compile>
+        <Compile Update="MainWindow.FiltersTab.cs">
+          <DependentUpon>MainWindow.xaml</DependentUpon>
+        </Compile>
+        <Compile Update="MainWindow.FileOperations.cs">
+          <DependentUpon>MainWindow.xaml</DependentUpon>
+        </Compile>
     </ItemGroup>
 
     <!-- REMOVED ITEMGROUP: The SDK includes Page items automatically -->
