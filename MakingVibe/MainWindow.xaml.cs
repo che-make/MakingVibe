@@ -22,6 +22,7 @@ using System.Windows.Media; // For VisualTreeHelper
 using CheckBox = System.Windows.Controls.CheckBox; // Explicit alias
 using ListViewItem = System.Windows.Controls.ListViewItem;
 using MessageBox = System.Windows.MessageBox; // Explicit alias
+using WinForms = System.Windows.Forms; // Alias for Windows.Forms
 
 namespace MakingVibe
 {
@@ -45,6 +46,9 @@ namespace MakingVibe
         private bool isCutOperation;
         private bool _isUpdatingParentState = false; // Flag to prevent recursive selection updates
 
+        // Nueva propiedad para las rutas guardadas
+        public ObservableCollection<SavedPath> SavedPaths { get; set; }
+
         // Commands
         public static RoutedCommand RefreshCommand = new RoutedCommand();
         public static RoutedCommand DeleteCommand = new RoutedCommand();
@@ -65,6 +69,10 @@ namespace MakingVibe
             _fragmentsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "makingvibe.fragments.json");
             LoadFragments(); // Load fragments on startup (method in PromptTab partial class)
             listViewFragments.ItemsSource = Fragments;
+
+            // Inicializar SavedPaths
+            SavedPaths = new ObservableCollection<SavedPath>();
+            cmbSavedPaths.ItemsSource = SavedPaths;
 
             // *** Initialize File Filters ***
             FileFilters = new ObservableCollection<FileFilterItem>();
@@ -104,6 +112,7 @@ namespace MakingVibe
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
             rootPath = _settingsService.LoadLastRootPath();
+            LoadSavedPaths(); // Cargar las rutas guardadas
 
             if (!string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath))
             {
@@ -279,6 +288,9 @@ namespace MakingVibe
                  btnExpandAll.IsEnabled = treeHasRoot;
                  btnClearSelection.IsEnabled = hasSelection;
 
+                 // Botón de guardar ruta
+                 btnSavePath.IsEnabled = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
+
                  // Filter Tab Buttons
                  btnSelectAllFilters.IsEnabled = filtersEnabled;
                  btnDeselectAllFilters.IsEnabled = filtersEnabled;
@@ -351,6 +363,160 @@ namespace MakingVibe
                 }
             }
             return null;
+        }
+
+        // --- Nuevos métodos para gestión de rutas guardadas ---
+
+        /// <summary>
+        /// Carga las rutas guardadas y actualiza el ComboBox
+        /// </summary>
+        private void LoadSavedPaths()
+        {
+            try
+            {
+                SavedPaths.Clear();
+                var paths = _settingsService.LoadSavedPaths();
+                
+                foreach (var path in paths)
+                {
+                    SavedPaths.Add(path);
+                }
+                
+                // Si tenemos una ruta actual, seleccionarla en el combo box si existe
+                if (!string.IsNullOrEmpty(rootPath))
+                {
+                    var matchingPath = SavedPaths.FirstOrDefault(p => p.Path.Equals(rootPath, StringComparison.OrdinalIgnoreCase));
+                    if (matchingPath != null)
+                    {
+                        cmbSavedPaths.SelectedItem = matchingPath;
+                    }
+                }
+                
+                // Actualizar estado del botón de guardar ruta
+                UpdateSavePathButtonState();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error loading saved paths: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Actualiza el estado del botón de guardar ruta
+        /// </summary>
+        private void UpdateSavePathButtonState()
+        {
+            btnSavePath.IsEnabled = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
+        }
+
+        /// <summary>
+        /// Manejador del evento de clic en el botón Guardar Ruta
+        /// </summary>
+        private void btnSavePath_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(rootPath) || !_fileSystemService.DirectoryExists(rootPath))
+            {
+                MessageBox.Show("Primero seleccione una carpeta raíz válida.", "Guardar Ruta", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            // Obtener un nombre predeterminado basado en el nombre de la carpeta
+            string defaultName = Path.GetFileName(rootPath) ?? rootPath;
+            string displayName = defaultName;
+            
+            // Mostrar diálogo para que el usuario introduzca un nombre personalizado
+            var dialog = new InputDialog("Guardar Ruta", "Nombre para la ruta (opcional):", defaultName);
+            dialog.Owner = this;
+            
+            if (dialog.ShowDialog() == true)
+            {
+                displayName = dialog.InputText.Trim();
+                if (string.IsNullOrWhiteSpace(displayName))
+                {
+                    displayName = defaultName; // Usar el predeterminado si está vacío
+                }
+            }
+            else
+            {
+                return; // Usuario canceló
+            }
+            
+            _settingsService.AddSavedPath(rootPath, displayName);
+            LoadSavedPaths(); // Refrescar el combo box
+            
+            UpdateStatusBarAndButtonStates($"Ruta '{displayName}' guardada.");
+        }
+
+        /// <summary>
+        /// Manejador del evento de cambio de selección en el ComboBox de rutas guardadas
+        /// </summary>
+        private void cmbSavedPaths_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (cmbSavedPaths.SelectedItem is SavedPath selectedPath)
+            {
+                if (string.IsNullOrEmpty(selectedPath.Path) || !_fileSystemService.DirectoryExists(selectedPath.Path))
+                {
+                    MessageBox.Show($"La ruta '{selectedPath}' ya no existe o no es accesible.", "Ruta Inválida", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    
+                    // Preguntar si quieren eliminar la ruta inválida
+                    if (MessageBox.Show("¿Desea eliminar esta ruta de la lista?", "Eliminar Ruta", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                    {
+                        _settingsService.RemoveSavedPath(selectedPath.Path);
+                        LoadSavedPaths(); // Refrescar el combo box
+                    }
+                    
+                    return;
+                }
+                
+                // Cambiar a la ruta seleccionada
+                rootPath = selectedPath.Path;
+                txtCurrentPath.Text = $"Ruta actual: {rootPath}";
+                UpdateStatusBarAndButtonStates($"Cargando directorio: {rootPath}...");
+                _activeFileExtensionsFilter.Clear(); // Reset filters on root change
+                _settingsService.SaveLastRootPath(rootPath);
+                LoadDirectoryTreeUI(rootPath);
+                UpdateStatusBarAndButtonStates($"Directorio cambiado a '{selectedPath}'.");
+                
+                // Actualizar la fecha de último uso de la ruta
+                _settingsService.AddSavedPath(selectedPath.Path, selectedPath.DisplayName);
+            }
+        }
+
+        // --- Selector de ruta (modificar el método existente, no reemplazarlo) ---
+        private void btnSelectRoot_Click(object sender, RoutedEventArgs e)
+        {
+            using var dialog = new WinForms.FolderBrowserDialog
+            {
+                Description = "Seleccione la carpeta raíz del proyecto",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = true
+            };
+
+            string? initialDir = rootPath;
+            if (string.IsNullOrEmpty(initialDir) || !_fileSystemService.DirectoryExists(initialDir))
+            {
+                initialDir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            }
+            if (!string.IsNullOrEmpty(initialDir) && _fileSystemService.DirectoryExists(initialDir))
+            {
+                dialog.SelectedPath = initialDir;
+            }
+
+            if (dialog.ShowDialog() == WinForms.DialogResult.OK)
+            {
+                rootPath = dialog.SelectedPath;
+                txtCurrentPath.Text = $"Ruta actual: {rootPath}";
+                UpdateStatusBarAndButtonStates($"Cargando directorio: {rootPath}...");
+                _activeFileExtensionsFilter.Clear(); // Reset filters on root change
+                LoadDirectoryTreeUI(rootPath); // Reload UI & Repopulate filters
+                _settingsService.SaveLastRootPath(rootPath);
+                
+                // Actualizar el estado del botón de guardar ruta
+                UpdateSavePathButtonState();
+                
+                UpdateStatusBarAndButtonStates("Listo.");
+                treeViewFiles.Focus();
+            }
         }
 
         // --- Partial Class Methods (Defined in other files) ---

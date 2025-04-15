@@ -42,8 +42,24 @@
             <!-- Modified StackPanel to include Collapse/Expand buttons -->
             <StackPanel Grid.Row="0" Margin="10">
                 <TextBlock Text="Explorador de Archivos" FontWeight="Bold" FontSize="16" Margin="0,0,0,5" />
-                <Button x:Name="btnSelectRoot" Content="Seleccionar Carpeta Raíz" Margin="0,0,0,5" Padding="5"
-                        Click="btnSelectRoot_Click" ToolTip="Seleccionar la carpeta base del proyecto"/>
+                
+                <!-- Root folder selection and saving -->
+                <Grid Margin="0,0,0,5">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="btnSelectRoot" Grid.Column="0" Content="Seleccionar Carpeta Raíz" Padding="5"
+                            Click="btnSelectRoot_Click" ToolTip="Seleccionar la carpeta base del proyecto"/>
+                    <Button x:Name="btnSavePath" Grid.Column="1" Content="Guardar Ruta" Margin="5,0,0,0" Padding="5"
+                            Click="btnSavePath_Click" ToolTip="Guardar esta ruta en la lista de rutas frecuentes"/>
+                </Grid>
+                
+                <!-- Saved paths dropdown -->
+                <ComboBox x:Name="cmbSavedPaths" Margin="0,0,0,5" Padding="5"
+                          SelectionChanged="cmbSavedPaths_SelectionChanged" 
+                          ToolTip="Seleccionar una ruta guardada anteriormente"/>
+                
                 <!-- Wrap buttons for better layout -->
                 <WrapPanel Orientation="Horizontal" Margin="0,0,0,5">
                      <Button x:Name="btnCollapseAll" Content="Contraer Todo" Margin="0,0,5,2" Padding="5"
