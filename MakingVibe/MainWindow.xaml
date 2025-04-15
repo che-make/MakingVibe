@@ -1,6 +1,6 @@
 ﻿<!--
  * MakingVibe/MainWindow.xaml
- * No functional changes needed for this refactoring.
+ * Includes status bar updates for LOC and Char count.
  -->
 <Window x:Class="MakingVibe.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -277,9 +277,17 @@
             <StatusBarItem>
                 <TextBlock x:Name="statusBarText" Text="Listo." />
             </StatusBarItem>
+            <!-- MODIFICATION START: Replace single TextBlock with StackPanel -->
             <StatusBarItem HorizontalAlignment="Right">
-                <TextBlock x:Name="statusSelectionCount" Text="Seleccionados: 0" Margin="0,0,10,0" />
-             </StatusBarItem>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="statusSelectionCount" Text="Items: 0" Margin="0,0,10,0" ToolTip="Total selected items (files and directories)"/>
+                    <TextBlock Text="|" Foreground="Gray" Margin="0,0,10,0"/>
+                    <TextBlock x:Name="statusTotalLines" Text="LOC: 0" Margin="0,0,10,0" ToolTip="Total lines of code in selected text files"/>
+                    <TextBlock Text="|" Foreground="Gray" Margin="0,0,10,0"/>
+                    <TextBlock x:Name="statusTotalChars" Text="Chars: 0" Margin="0,0,10,0" ToolTip="Total characters in selected text files"/>
+                </StackPanel>
+            </StatusBarItem>
+            <!-- MODIFICATION END -->
         </StatusBar>
     </Grid>
 </Window>

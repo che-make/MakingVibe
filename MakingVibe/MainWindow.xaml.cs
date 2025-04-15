@@ -3,6 +3,7 @@
  * Main partial class file.
  * Contains core window logic, service initialization, shared state,
  * event handlers for window lifetime, status bar updates, and command definitions.
+ * Includes LOC and Char count updates in status bar.
  */
 using MakingVibe.Models;
 using MakingVibe.Services;
@@ -10,9 +11,10 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.IO;
+using System.IO; // Needed for File reading for char count
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks; // Potentially for async calculation later
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -133,15 +135,66 @@ namespace MakingVibe
 
         private void UpdateStatusBarAndButtonStates(string statusMessage = "")
         {
+             // *** ADDED: Variables for LOC and Char count ***
+             long totalLines = 0;
+             long totalChars = 0;
+             int selectedFileCount = 0; // Count only files for LOC/Chars
+
+             // Calculate LOC and Chars for selected text files
+             // WARNING: Reading file content here synchronously can impact UI responsiveness
+             //          if many large files are selected. Consider async calculation if needed.
+             foreach (var item in selectedItems)
+             {
+                 if (!item.IsDirectory) // Only count for files
+                 {
+                     selectedFileCount++;
+                     if (FileHelper.IsTextFile(item.Path))
+                     {
+                         // Add line count (already calculated, hopefully)
+                         totalLines += item.LineCount ?? 0;
+
+                         // Calculate character count by reading the file
+                         try
+                         {
+                             // Ensure file still exists before reading
+                             if (File.Exists(item.Path))
+                             {
+                                 // Note: File.ReadAllText is simple but reads entire file into memory.
+                                 // Consider StreamReader if memory becomes an issue for huge files.
+                                 string content = File.ReadAllText(item.Path);
+                                 totalChars += content.Length;
+                             }
+                             else {
+                                 // File might have been deleted since selection
+                                 Debug.WriteLine($"File not found for char count: {item.Path}");
+                             }
+                         }
+                         catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException)
+                         {
+                             // Handle potential errors reading the file for char count gracefully
+                             Debug.WriteLine($"Error reading file {item.Path} for char count: {ex.Message}");
+                         }
+                         catch (Exception ex)
+                         {
+                              // Catch unexpected errors
+                              Debug.WriteLine($"Unexpected error reading file {item.Path} for char count: {ex}");
+                         }
+                     }
+                 }
+             }
+             // *** END ADDED Calculation ***
+
+
              Action updateAction = () => {
-                 // Update status bar text
+                 // Update status bar text (Main status)
                 if (!string.IsNullOrEmpty(statusMessage))
                 {
                     statusBarText.Text = statusMessage;
                 }
                 else if (selectedItems.Count > 0)
                 {
-                    statusBarText.Text = $"{selectedItems.Count} elemento(s) seleccionado(s).";
+                    // Use selectedItems.Count for the general message, but selectedFileCount for details
+                    statusBarText.Text = $"{selectedItems.Count} elemento(s) seleccionado(s) ({selectedFileCount} archivo(s)).";
                 }
                  else if (!string.IsNullOrEmpty(rootPath))
                  {
@@ -152,8 +205,12 @@ namespace MakingVibe
                      statusBarText.Text = "Por favor, seleccione una carpeta raíz.";
                  }
 
-                // Update selection count
-                statusSelectionCount.Text = $"Seleccionados: {selectedItems.Count}";
+                // Update selection count and details (Right side)
+                // Use N0 format specifier for thousands separator
+                statusSelectionCount.Text = $"Items: {selectedItems.Count:N0}";
+                statusTotalLines.Text = $"LOC: {totalLines:N0}";
+                statusTotalChars.Text = $"Chars: {totalChars:N0}";
+
 
                  // Standard Button States
                  bool hasSelection = selectedItems.Count > 0;
@@ -162,19 +219,45 @@ namespace MakingVibe
 
                  // Determine if any fragments are selected
                  bool anyFragmentSelected = false;
-                 foreach (var item in listViewFragments.Items)
+                 // Use ItemContainerGenerator only if the list view is visible and rendered
+                 if (listViewFragments.IsVisible)
                  {
-                     var container = listViewFragments.ItemContainerGenerator.ContainerFromItem(item) as ListViewItem;
-                     if (container != null)
+                     try
                      {
-                         var checkBox = FindVisualChild<CheckBox>(container);
-                         if (checkBox != null && checkBox.IsChecked == true)
+                         foreach (var item in listViewFragments.Items)
                          {
-                             anyFragmentSelected = true;
-                             break;
+                             // Ensure ItemContainerGenerator has finished before accessing
+                             if (listViewFragments.ItemContainerGenerator.Status == System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated)
+                             {
+                                 var container = listViewFragments.ItemContainerGenerator.ContainerFromItem(item) as ListViewItem;
+                                 if (container != null)
+                                 {
+                                     var checkBox = FindVisualChild<CheckBox>(container);
+                                     if (checkBox != null && checkBox.IsChecked == true)
+                                     {
+                                         anyFragmentSelected = true;
+                                         break;
+                                     }
+                                 }
+                                 // else: Container might be null if item is virtualized/not yet generated
+                             }
+                             else
+                             {
+                                 // Generator not ready, might need to wait or use data binding
+                                 // For simplicity, we might skip this check if it causes issues
+                                 // Debug.WriteLine("Fragment List ItemContainerGenerator not ready.");
+                             }
                          }
+                     } catch (InvalidOperationException ioex) {
+                        // ItemContainerGenerator might throw if accessed at the wrong time during updates.
+                        Debug.WriteLine($"Warning: Could not check fragment selection state reliably: {ioex.Message}");
+                        // Consider alternative logic if this becomes problematic.
                      }
+                 } else {
+                     // Alternative check if fragments list isn't visible (if TextFragment had IsSelected property)
+                     // anyFragmentSelected = Fragments.Any(f => f.IsSelected);
                  }
+
 
                  bool canCopyFiles = hasSelection && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path));
                  bool canCopyPrompt = !string.IsNullOrWhiteSpace(txtMainPrompt.Text);
@@ -189,7 +272,7 @@ namespace MakingVibe
                  btnDelete.IsEnabled = hasSelection;
                  btnRename.IsEnabled = hasSingleSelection;
                  btnPaste.IsEnabled = canPaste;
-                 btnRefresh.IsEnabled = !string.IsNullOrEmpty(rootPath); 
+                 btnRefresh.IsEnabled = !string.IsNullOrEmpty(rootPath);
 
                 // TreeView Panel Buttons
                  btnCollapseAll.IsEnabled = treeHasRoot;
@@ -207,7 +290,7 @@ namespace MakingVibe
                  if (treeViewFiles.SelectedItem is TreeViewItem selectedTvi && selectedTvi.Tag is FileSystemItem selectedFsi && selectedFsi.IsDirectory)
                  {
                      canCollapseCurrent = selectedTvi.IsExpanded;
-                     canExpandCurrent = !selectedTvi.IsExpanded && selectedTvi.HasItems;
+                     canExpandCurrent = !selectedTvi.IsExpanded && selectedTvi.HasItems; // Only allow expand if it has items (or placeholder)
                  }
                  btnCollapseCurrent.IsEnabled = canCollapseCurrent;
                  btnExpandCurrent.IsEnabled = canExpandCurrent;
@@ -269,6 +352,23 @@ namespace MakingVibe
             }
             return null;
         }
+
+        // --- Partial Class Methods (Defined in other files) ---
+        // LoadDirectoryTreeUI(string path) -> MainWindow.TreeView.cs
+        // LoadChildrenUI(...) -> MainWindow.TreeView.cs
+        // UpdateFileFiltersUI(...) -> MainWindow.FiltersTab.cs
+        // AdjustFilterCount(...) -> MainWindow.FiltersTab.cs
+        // ApplyFiltersAndReloadTree() -> MainWindow.FiltersTab.cs
+        // ShowPreviewAsync(FileSystemItem? fsi) -> MainWindow.PreviewTab.cs
+        // AddCurrentFragment() -> MainWindow.PromptTab.cs
+        // LoadFragments() -> MainWindow.PromptTab.cs
+        // SaveFragments() -> MainWindow.PromptTab.cs
+        // RefreshNodeUI(...) -> MainWindow.TreeView.cs
+        // ClearAllSelectionsUI() -> MainWindow.TreeView.cs
+        // SelectDirectoryDescendantsRecursive(...) -> MainWindow.TreeView.cs
+        // UpdateDirectoryFilesSelection(...) -> MainWindow.TreeView.cs
+        // UpdateParentDirectorySelectionState(...) -> MainWindow.TreeView.cs
+        // CollapseOrExpandNodes(...) -> MainWindow.TreeView.cs
 
     } // End partial class MainWindow
 } // End namespace MakingVibe
