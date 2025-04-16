@@ -46,7 +46,6 @@ namespace MakingVibe
         private bool isCutOperation;
         private bool _isUpdatingParentState = false; // Flag to prevent recursive selection updates
 
-        // Nueva propiedad para las rutas guardadas
         public ObservableCollection<SavedPath> SavedPaths { get; set; }
 
         // Commands
@@ -67,10 +66,10 @@ namespace MakingVibe
             // *** Initialize Fragments ***
             Fragments = new ObservableCollection<TextFragment>();
             _fragmentsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "makingvibe.fragments.json");
-            LoadFragments(); // Load fragments on startup (method in PromptTab partial class)
+            LoadFragments(); // Method in PromptTab partial class
             listViewFragments.ItemsSource = Fragments;
 
-            // Inicializar SavedPaths
+            // Initialize SavedPaths
             SavedPaths = new ObservableCollection<SavedPath>();
             cmbSavedPaths.ItemsSource = SavedPaths;
 
@@ -113,6 +112,7 @@ namespace MakingVibe
         {
             rootPath = _settingsService.LoadLastRootPath();
             LoadSavedPaths(); // Cargar las rutas guardadas
+            // UpdateSavedPathControlsState(); // Called within LoadSavedPaths
 
             if (!string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath))
             {
@@ -124,6 +124,7 @@ namespace MakingVibe
             {
                 txtCurrentPath.Text = "Ruta actual: (Seleccione una carpeta raíz)";
                 UpdateStatusBarAndButtonStates("Por favor, seleccione una carpeta raíz.");
+                UpdateSavedPathControlsState(); // Update button state even if no root path
                 rootPath = null;
             }
 
@@ -144,7 +145,6 @@ namespace MakingVibe
 
         private void UpdateStatusBarAndButtonStates(string statusMessage = "")
         {
-             // *** ADDED: Variables for LOC and Char count ***
              long totalLines = 0;
              long totalChars = 0;
              int selectedFileCount = 0; // Count only files for LOC/Chars
@@ -191,8 +191,6 @@ namespace MakingVibe
                      }
                  }
              }
-             // *** END ADDED Calculation ***
-
 
              Action updateAction = () => {
                  // Update status bar text (Main status)
@@ -287,9 +285,6 @@ namespace MakingVibe
                  btnCollapseAll.IsEnabled = treeHasRoot;
                  btnExpandAll.IsEnabled = treeHasRoot;
                  btnClearSelection.IsEnabled = hasSelection;
-
-                 // Botón de guardar ruta
-                 btnSavePath.IsEnabled = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
 
                  // Filter Tab Buttons
                  btnSelectAllFilters.IsEnabled = filtersEnabled;
@@ -392,8 +387,8 @@ namespace MakingVibe
                     }
                 }
                 
-                // Actualizar estado del botón de guardar ruta
-                UpdateSavePathButtonState();
+                // Actualizar estado de los botones de ruta guardada
+                UpdateSavedPathControlsState();
             }
             catch (Exception ex)
             {
@@ -401,13 +396,11 @@ namespace MakingVibe
             }
         }
 
-        /// <summary>
-        /// Actualiza el estado del botón de guardar ruta
-        /// </summary>
-        private void UpdateSavePathButtonState()
-        {
-            btnSavePath.IsEnabled = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
-        }
+        // --- Method deprecated, logic moved to UpdateSavedPathControlsState ---
+        // private void UpdateSavePathButtonState()
+        // {
+        //     btnSavePath.IsEnabled = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
+        // }
 
         /// <summary>
         /// Manejador del evento de clic en el botón Guardar Ruta
@@ -444,6 +437,7 @@ namespace MakingVibe
             _settingsService.AddSavedPath(rootPath, displayName);
             LoadSavedPaths(); // Refrescar el combo box
             
+            UpdateSavedPathControlsState(); // Update delete button state as well
             UpdateStatusBarAndButtonStates($"Ruta '{displayName}' guardada.");
         }
 
@@ -454,6 +448,9 @@ namespace MakingVibe
         {
             if (cmbSavedPaths.SelectedItem is SavedPath selectedPath)
             {
+                // Update delete button enabled state whenever selection changes
+                UpdateSavedPathControlsState();
+
                 if (string.IsNullOrEmpty(selectedPath.Path) || !_fileSystemService.DirectoryExists(selectedPath.Path))
                 {
                     MessageBox.Show($"La ruta '{selectedPath}' ya no existe o no es accesible.", "Ruta Inválida", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -463,6 +460,7 @@ namespace MakingVibe
                     {
                         _settingsService.RemoveSavedPath(selectedPath.Path);
                         LoadSavedPaths(); // Refrescar el combo box
+                        // UpdateSavedPathControlsState(); // Called within LoadSavedPaths
                     }
                     
                     return;
@@ -482,6 +480,25 @@ namespace MakingVibe
             }
         }
 
+        /// <summary>
+        /// Handles the click event for the "Delete Saved Path" button.
+        /// </summary>
+        private void btnDeleteSavedPath_Click(object sender, RoutedEventArgs e)
+        {
+            if (cmbSavedPaths.SelectedItem is SavedPath selectedPath)
+            {
+                string displayName = selectedPath.ToString(); // Use the display name from ToString()
+                var result = MessageBox.Show($"¿Está seguro de que desea eliminar la ruta guardada '{displayName}'?\n({selectedPath.Path})", 
+                                             "Confirmar Eliminación", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                
+                if (result == MessageBoxResult.Yes)
+                {
+                    _settingsService.RemoveSavedPath(selectedPath.Path);
+                    LoadSavedPaths(); // Refresh the ComboBox
+                    UpdateStatusBarAndButtonStates($"Ruta guardada '{displayName}' eliminada.");
+                }
+            }
+        }
         // --- Selector de ruta (modificar el método existente, no reemplazarlo) ---
         private void btnSelectRoot_Click(object sender, RoutedEventArgs e)
         {
@@ -511,12 +528,21 @@ namespace MakingVibe
                 LoadDirectoryTreeUI(rootPath); // Reload UI & Repopulate filters
                 _settingsService.SaveLastRootPath(rootPath);
                 
-                // Actualizar el estado del botón de guardar ruta
-                UpdateSavePathButtonState();
+                // Actualizar el estado de los botones de ruta guardada
+                UpdateSavedPathControlsState(); 
                 
                 UpdateStatusBarAndButtonStates("Listo.");
                 treeViewFiles.Focus();
             }
+        }
+        
+        /// <summary>
+        /// Updates the enabled state of the Save Path and Delete Path buttons.
+        /// </summary>
+        private void UpdateSavedPathControlsState()
+        {
+            btnSavePath.IsEnabled = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
+            btnDeleteSavedPath.IsEnabled = cmbSavedPaths.SelectedItem != null;
         }
 
         // --- Partial Class Methods (Defined in other files) ---
