@@ -1,6 +1,7 @@
 ﻿<!--
  * MakingVibe/MainWindow.xaml
  * Includes status bar updates for LOC and Char count.
+ * ADDED: AI Studio Tab with WebView2
  -->
 <Window x:Class="MakingVibe.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -9,6 +10,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:MakingVibe"
         xmlns:models="clr-namespace:MakingVibe.Models"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         mc:Ignorable="d"
         Height="650" Width="950"
         Icon="./makingvibe.ico"
@@ -42,7 +44,7 @@
             <!-- Modified StackPanel to include Collapse/Expand buttons -->
             <StackPanel Grid.Row="0" Margin="10">
                 <TextBlock Text="Explorador de Archivos" FontWeight="Bold" FontSize="16" Margin="0,0,0,5" />
-                
+
                 <!-- Root folder selection and saving -->
                 <Grid Margin="0,0,0,5">
                     <Grid.ColumnDefinitions>
@@ -54,7 +56,7 @@
                     <Button x:Name="btnSavePath" Grid.Column="1" Content="Guardar Ruta" Margin="5,0,0,0" Padding="5" IsEnabled="False"
                             Click="btnSavePath_Click" ToolTip="Guardar esta ruta en la lista de rutas frecuentes"/>
                 </Grid>
-                
+
                  <!-- Saved paths dropdown -->
                  <!-- Wrap ComboBox and Delete button -->
                 <Grid Margin="0,0,0,5">
@@ -62,12 +64,12 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <ComboBox x:Name="cmbSavedPaths" Grid.Column="0" Padding="5" SelectionChanged="cmbSavedPaths_SelectionChanged" 
+                    <ComboBox x:Name="cmbSavedPaths" Grid.Column="0" Padding="5" SelectionChanged="cmbSavedPaths_SelectionChanged"
                           ToolTip="Seleccionar una ruta guardada anteriormente"/>
                     <Button x:Name="btnDeleteSavedPath" Grid.Column="1" Content="Eliminar Ruta" Margin="5,0,0,0" Padding="5" IsEnabled="False"
                             Click="btnDeleteSavedPath_Click" ToolTip="Eliminar la ruta seleccionada de la lista de rutas guardadas"/>
                 </Grid>
-                
+
                 <!-- Wrap buttons for better layout -->
                 <WrapPanel Orientation="Horizontal" Margin="0,0,0,5">
                      <Button x:Name="btnCollapseAll" Content="Contraer Todo" Margin="0,0,5,2" Padding="5"
@@ -289,6 +291,21 @@
                              </ScrollViewer>
                          </Grid>
                     </TabItem>
+
+                    <!-- ADDED: AI Studio Tab -->
+                    <TabItem Header="AI Studio">
+                        <Grid Background="#F5F5F5"> <!-- Optional: background while loading -->
+                            <wv2:WebView2 x:Name="webViewAiStudio"
+                                          Source="https://aistudio.google.com/" />
+                            <!-- Optional: Add a loading indicator overlay -->
+                            <!--
+                            <Border x:Name="loadingOverlay" Background="#AAFFFFFF" Visibility="Visible">
+                                <TextBlock Text="Cargando AI Studio..." HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="16"/>
+                            </Border>
+                            -->
+                        </Grid>
+                    </TabItem>
+                    <!-- END ADDED: AI Studio Tab -->
 
                 </TabControl>
             </Grid>

@@ -7,7 +7,6 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <UseWPF>true</UseWPF>
         <UseWindowsForms>true</UseWindowsForms>
-        <!-- REMOVED: No need for EnableDefaultPageItems unless you explicitly want to manage all includes -->
     </PropertyGroup>
 
     <ItemGroup>
@@ -16,38 +15,30 @@
     </ItemGroup>
 
     <ItemGroup>
+        <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2210.55" />
+    </ItemGroup>
+
+    <ItemGroup>
         <Compile Update="RenameDialog.cs">
             <DependentUpon>RenameDialog.xaml</DependentUpon>
         </Compile>
-        <!-- This Compile Update is still correct as it links the .cs file to the .xaml -->
         <Compile Update="EditFragmentDialog.xaml.cs">
             <DependentUpon>EditFragmentDialog.xaml</DependentUpon>
         </Compile>
         <Compile Update="MainWindow.TreeView.cs">
-          <DependentUpon>MainWindow.xaml</DependentUpon>
+            <DependentUpon>MainWindow.xaml</DependentUpon>
         </Compile>
         <Compile Update="MainWindow.PromptTab.cs">
-          <DependentUpon>MainWindow.xaml</DependentUpon>
+            <DependentUpon>MainWindow.xaml</DependentUpon>
         </Compile>
         <Compile Update="MainWindow.PreviewTab.cs">
-          <DependentUpon>MainWindow.xaml</DependentUpon>
+            <DependentUpon>MainWindow.xaml</DependentUpon>
         </Compile>
         <Compile Update="MainWindow.FiltersTab.cs">
-          <DependentUpon>MainWindow.xaml</DependentUpon>
+            <DependentUpon>MainWindow.xaml</DependentUpon>
         </Compile>
         <Compile Update="MainWindow.FileOperations.cs">
-          <DependentUpon>MainWindow.xaml</DependentUpon>
+            <DependentUpon>MainWindow.xaml</DependentUpon>
         </Compile>
     </ItemGroup>
-
-    <!-- REMOVED ITEMGROUP: The SDK includes Page items automatically -->
-    <!-- 
-    <ItemGroup>
-        <Page Include="EditFragmentDialog.xaml">
-            <SubType>Designer</SubType>
-            <Generator>MSBuild:Compile</Generator>
-        </Page>
-    </ItemGroup> 
-    -->
-
 </Project>

@@ -4,6 +4,8 @@
  * Contains core window logic, service initialization, shared state,
  * event handlers for window lifetime, status bar updates, and command definitions.
  * Includes LOC and Char count updates in status bar.
+ * ADDED: WebView2 initialization and CSS injection.
+ * FIXED: Use textContent instead of innerHTML for CSS injection due to Trusted Types.
  */
 using MakingVibe.Models;
 using MakingVibe.Services;
@@ -14,12 +16,17 @@ using System.Diagnostics;
 using System.IO; // Needed for File reading for char count
 using System.Linq;
 using System.Text;
-using System.Threading.Tasks; // Potentially for async calculation later
+using System.Threading.Tasks; // For async operations AND WebView2
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Media; // For VisualTreeHelper
+using System.Windows.Media; // For VisualTreeHelper and Brushes
+using Microsoft.Web.WebView2.Wpf; // For WebView2
+using Microsoft.Web.WebView2.Core; // For CoreWebView2 events and methods
+using System.Text.Json; // For JSON serialization used in CSS injection
+using Brushes = System.Windows.Media.Brushes; // Explicit alias
 using CheckBox = System.Windows.Controls.CheckBox; // Explicit alias
+using HorizontalAlignment = System.Windows.HorizontalAlignment;
 using ListViewItem = System.Windows.Controls.ListViewItem;
 using MessageBox = System.Windows.MessageBox; // Explicit alias
 using WinForms = System.Windows.Forms; // Alias for Windows.Forms
@@ -108,11 +115,10 @@ namespace MakingVibe
 
         // --- Window Load/Close ---
 
-        private void Window_Loaded(object sender, RoutedEventArgs e)
+        private async void Window_Loaded(object sender, RoutedEventArgs e)
         {
             rootPath = _settingsService.LoadLastRootPath();
             LoadSavedPaths(); // Cargar las rutas guardadas
-            // UpdateSavedPathControlsState(); // Called within LoadSavedPaths
 
             if (!string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath))
             {
@@ -127,6 +133,9 @@ namespace MakingVibe
                 UpdateSavedPathControlsState(); // Update button state even if no root path
                 rootPath = null;
             }
+
+            // Initialize WebView2 AFTER other UI loading might be done
+            await InitializeWebViewAsync();
 
             if (rootPath != null)
             {
@@ -147,45 +156,33 @@ namespace MakingVibe
         {
              long totalLines = 0;
              long totalChars = 0;
-             int selectedFileCount = 0; // Count only files for LOC/Chars
+             int selectedFileCount = 0;
 
-             // Calculate LOC and Chars for selected text files
-             // WARNING: Reading file content here synchronously can impact UI responsiveness
-             //          if many large files are selected. Consider async calculation if needed.
              foreach (var item in selectedItems)
              {
-                 if (!item.IsDirectory) // Only count for files
+                 if (!item.IsDirectory)
                  {
                      selectedFileCount++;
                      if (FileHelper.IsTextFile(item.Path))
                      {
-                         // Add line count (already calculated, hopefully)
                          totalLines += item.LineCount ?? 0;
-
-                         // Calculate character count by reading the file
                          try
                          {
-                             // Ensure file still exists before reading
                              if (File.Exists(item.Path))
                              {
-                                 // Note: File.ReadAllText is simple but reads entire file into memory.
-                                 // Consider StreamReader if memory becomes an issue for huge files.
                                  string content = File.ReadAllText(item.Path);
                                  totalChars += content.Length;
                              }
                              else {
-                                 // File might have been deleted since selection
                                  Debug.WriteLine($"File not found for char count: {item.Path}");
                              }
                          }
                          catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException)
                          {
-                             // Handle potential errors reading the file for char count gracefully
                              Debug.WriteLine($"Error reading file {item.Path} for char count: {ex.Message}");
                          }
                          catch (Exception ex)
                          {
-                              // Catch unexpected errors
                               Debug.WriteLine($"Unexpected error reading file {item.Path} for char count: {ex}");
                          }
                      }
@@ -193,47 +190,25 @@ namespace MakingVibe
              }
 
              Action updateAction = () => {
-                 // Update status bar text (Main status)
-                if (!string.IsNullOrEmpty(statusMessage))
-                {
-                    statusBarText.Text = statusMessage;
-                }
-                else if (selectedItems.Count > 0)
-                {
-                    // Use selectedItems.Count for the general message, but selectedFileCount for details
-                    statusBarText.Text = $"{selectedItems.Count} elemento(s) seleccionado(s) ({selectedFileCount} archivo(s)).";
-                }
-                 else if (!string.IsNullOrEmpty(rootPath))
-                 {
-                     statusBarText.Text = "Listo.";
-                 }
-                 else
-                 {
-                     statusBarText.Text = "Por favor, seleccione una carpeta raíz.";
-                 }
+                if (!string.IsNullOrEmpty(statusMessage)) { statusBarText.Text = statusMessage; }
+                else if (selectedItems.Count > 0) { statusBarText.Text = $"{selectedItems.Count} elemento(s) seleccionado(s) ({selectedFileCount} archivo(s))."; }
+                else if (!string.IsNullOrEmpty(rootPath)) { statusBarText.Text = "Listo."; }
+                else { statusBarText.Text = "Por favor, seleccione una carpeta raíz."; }
 
-                // Update selection count and details (Right side)
-                // Use N0 format specifier for thousands separator
                 statusSelectionCount.Text = $"Items: {selectedItems.Count:N0}";
                 statusTotalLines.Text = $"LOC: {totalLines:N0}";
                 statusTotalChars.Text = $"Chars: {totalChars:N0}";
 
-
-                 // Standard Button States
                  bool hasSelection = selectedItems.Count > 0;
                  bool hasSingleSelection = selectedItems.Count == 1;
-                 bool canPaste = clipboardItems.Count > 0 && (treeViewFiles.SelectedItem != null || !string.IsNullOrEmpty(rootPath)); // Simplified paste check
-
-                 // Determine if any fragments are selected
+                 bool canPaste = clipboardItems.Count > 0 && (treeViewFiles.SelectedItem != null || !string.IsNullOrEmpty(rootPath));
                  bool anyFragmentSelected = false;
-                 // Use ItemContainerGenerator only if the list view is visible and rendered
                  if (listViewFragments.IsVisible)
                  {
                      try
                      {
                          foreach (var item in listViewFragments.Items)
                          {
-                             // Ensure ItemContainerGenerator has finished before accessing
                              if (listViewFragments.ItemContainerGenerator.Status == System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated)
                              {
                                  var container = listViewFragments.ItemContainerGenerator.ContainerFromItem(item) as ListViewItem;
@@ -246,25 +221,12 @@ namespace MakingVibe
                                          break;
                                      }
                                  }
-                                 // else: Container might be null if item is virtualized/not yet generated
-                             }
-                             else
-                             {
-                                 // Generator not ready, might need to wait or use data binding
-                                 // For simplicity, we might skip this check if it causes issues
-                                 // Debug.WriteLine("Fragment List ItemContainerGenerator not ready.");
                              }
                          }
                      } catch (InvalidOperationException ioex) {
-                        // ItemContainerGenerator might throw if accessed at the wrong time during updates.
                         Debug.WriteLine($"Warning: Could not check fragment selection state reliably: {ioex.Message}");
-                        // Consider alternative logic if this becomes problematic.
                      }
-                 } else {
-                     // Alternative check if fragments list isn't visible (if TextFragment had IsSelected property)
-                     // anyFragmentSelected = Fragments.Any(f => f.IsSelected);
                  }
-
 
                  bool canCopyFiles = hasSelection && selectedItems.Any(item => item.IsDirectory || FileHelper.IsTextFile(item.Path));
                  bool canCopyPrompt = !string.IsNullOrWhiteSpace(txtMainPrompt.Text);
@@ -272,7 +234,6 @@ namespace MakingVibe
                  bool treeHasRoot = treeViewFiles.HasItems;
                  bool filtersEnabled = !string.IsNullOrEmpty(rootPath) && FileFilters.Any();
 
-                 // Toolbar Buttons
                  btnCopyText.IsEnabled = canCopyAiText;
                  btnCopy.IsEnabled = hasSelection;
                  btnCut.IsEnabled = hasSelection;
@@ -281,29 +242,24 @@ namespace MakingVibe
                  btnPaste.IsEnabled = canPaste;
                  btnRefresh.IsEnabled = !string.IsNullOrEmpty(rootPath);
 
-                // TreeView Panel Buttons
                  btnCollapseAll.IsEnabled = treeHasRoot;
                  btnExpandAll.IsEnabled = treeHasRoot;
                  btnClearSelection.IsEnabled = hasSelection;
 
-                 // Filter Tab Buttons
                  btnSelectAllFilters.IsEnabled = filtersEnabled;
                  btnDeselectAllFilters.IsEnabled = filtersEnabled;
                  btnApplyFilters.IsEnabled = !string.IsNullOrEmpty(rootPath);
 
-                 // Collapse/Expand Current Button States (depend on TreeView selection)
                  bool canCollapseCurrent = false;
                  bool canExpandCurrent = false;
                  if (treeViewFiles.SelectedItem is TreeViewItem selectedTvi && selectedTvi.Tag is FileSystemItem selectedFsi && selectedFsi.IsDirectory)
                  {
                      canCollapseCurrent = selectedTvi.IsExpanded;
-                     canExpandCurrent = !selectedTvi.IsExpanded && selectedTvi.HasItems; // Only allow expand if it has items (or placeholder)
+                     canExpandCurrent = !selectedTvi.IsExpanded && selectedTvi.HasItems;
                  }
                  btnCollapseCurrent.IsEnabled = canCollapseCurrent;
                  btnExpandCurrent.IsEnabled = canExpandCurrent;
 
-
-                 // Ensure commands re-evaluate CanExecute
                  CommandManager.InvalidateRequerySuggested();
             };
 
@@ -362,22 +318,18 @@ namespace MakingVibe
 
         // --- Nuevos métodos para gestión de rutas guardadas ---
 
-        /// <summary>
-        /// Carga las rutas guardadas y actualiza el ComboBox
-        /// </summary>
         private void LoadSavedPaths()
         {
             try
             {
                 SavedPaths.Clear();
                 var paths = _settingsService.LoadSavedPaths();
-                
+
                 foreach (var path in paths)
                 {
                     SavedPaths.Add(path);
                 }
-                
-                // Si tenemos una ruta actual, seleccionarla en el combo box si existe
+
                 if (!string.IsNullOrEmpty(rootPath))
                 {
                     var matchingPath = SavedPaths.FirstOrDefault(p => p.Path.Equals(rootPath, StringComparison.OrdinalIgnoreCase));
@@ -386,8 +338,6 @@ namespace MakingVibe
                         cmbSavedPaths.SelectedItem = matchingPath;
                     }
                 }
-                
-                // Actualizar estado de los botones de ruta guardada
                 UpdateSavedPathControlsState();
             }
             catch (Exception ex)
@@ -396,15 +346,6 @@ namespace MakingVibe
             }
         }
 
-        // --- Method deprecated, logic moved to UpdateSavedPathControlsState ---
-        // private void UpdateSavePathButtonState()
-        // {
-        //     btnSavePath.IsEnabled = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
-        // }
-
-        /// <summary>
-        /// Manejador del evento de clic en el botón Guardar Ruta
-        /// </summary>
         private void btnSavePath_Click(object sender, RoutedEventArgs e)
         {
             if (string.IsNullOrEmpty(rootPath) || !_fileSystemService.DirectoryExists(rootPath))
@@ -413,93 +354,80 @@ namespace MakingVibe
                 return;
             }
 
-            // Obtener un nombre predeterminado basado en el nombre de la carpeta
             string defaultName = Path.GetFileName(rootPath) ?? rootPath;
             string displayName = defaultName;
-            
-            // Mostrar diálogo para que el usuario introduzca un nombre personalizado
+
             var dialog = new InputDialog("Guardar Ruta", "Nombre para la ruta (opcional):", defaultName);
             dialog.Owner = this;
-            
+
             if (dialog.ShowDialog() == true)
             {
                 displayName = dialog.InputText.Trim();
                 if (string.IsNullOrWhiteSpace(displayName))
                 {
-                    displayName = defaultName; // Usar el predeterminado si está vacío
+                    displayName = defaultName;
                 }
             }
             else
             {
-                return; // Usuario canceló
+                return; // User cancelled
             }
-            
+
             _settingsService.AddSavedPath(rootPath, displayName);
-            LoadSavedPaths(); // Refrescar el combo box
-            
-            UpdateSavedPathControlsState(); // Update delete button state as well
+            LoadSavedPaths(); // Refresh combo box
+            UpdateSavedPathControlsState(); // Update delete button state
             UpdateStatusBarAndButtonStates($"Ruta '{displayName}' guardada.");
         }
 
-        /// <summary>
-        /// Manejador del evento de cambio de selección en el ComboBox de rutas guardadas
-        /// </summary>
         private void cmbSavedPaths_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (cmbSavedPaths.SelectedItem is SavedPath selectedPath)
             {
-                // Update delete button enabled state whenever selection changes
-                UpdateSavedPathControlsState();
+                UpdateSavedPathControlsState(); // Update delete button state
 
                 if (string.IsNullOrEmpty(selectedPath.Path) || !_fileSystemService.DirectoryExists(selectedPath.Path))
                 {
                     MessageBox.Show($"La ruta '{selectedPath}' ya no existe o no es accesible.", "Ruta Inválida", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    
-                    // Preguntar si quieren eliminar la ruta inválida
                     if (MessageBox.Show("¿Desea eliminar esta ruta de la lista?", "Eliminar Ruta", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
                     {
                         _settingsService.RemoveSavedPath(selectedPath.Path);
-                        LoadSavedPaths(); // Refrescar el combo box
-                        // UpdateSavedPathControlsState(); // Called within LoadSavedPaths
+                        LoadSavedPaths();
                     }
-                    
                     return;
                 }
-                
-                // Cambiar a la ruta seleccionada
+
                 rootPath = selectedPath.Path;
                 txtCurrentPath.Text = $"Ruta actual: {rootPath}";
                 UpdateStatusBarAndButtonStates($"Cargando directorio: {rootPath}...");
-                _activeFileExtensionsFilter.Clear(); // Reset filters on root change
+                _activeFileExtensionsFilter.Clear();
                 _settingsService.SaveLastRootPath(rootPath);
                 LoadDirectoryTreeUI(rootPath);
                 UpdateStatusBarAndButtonStates($"Directorio cambiado a '{selectedPath}'.");
-                
-                // Actualizar la fecha de último uso de la ruta
-                _settingsService.AddSavedPath(selectedPath.Path, selectedPath.DisplayName);
+                _settingsService.AddSavedPath(selectedPath.Path, selectedPath.DisplayName); // Update last used
+            }
+            else
+            {
+                UpdateSavedPathControlsState(); // Handle selection cleared
             }
         }
 
-        /// <summary>
-        /// Handles the click event for the "Delete Saved Path" button.
-        /// </summary>
         private void btnDeleteSavedPath_Click(object sender, RoutedEventArgs e)
         {
             if (cmbSavedPaths.SelectedItem is SavedPath selectedPath)
             {
-                string displayName = selectedPath.ToString(); // Use the display name from ToString()
-                var result = MessageBox.Show($"¿Está seguro de que desea eliminar la ruta guardada '{displayName}'?\n({selectedPath.Path})", 
+                string displayName = selectedPath.ToString();
+                var result = MessageBox.Show($"¿Está seguro de que desea eliminar la ruta guardada '{displayName}'?\n({selectedPath.Path})",
                                              "Confirmar Eliminación", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-                
+
                 if (result == MessageBoxResult.Yes)
                 {
                     _settingsService.RemoveSavedPath(selectedPath.Path);
-                    LoadSavedPaths(); // Refresh the ComboBox
+                    LoadSavedPaths();
                     UpdateStatusBarAndButtonStates($"Ruta guardada '{displayName}' eliminada.");
                 }
             }
         }
-        // --- Selector de ruta (modificar el método existente, no reemplazarlo) ---
+
         private void btnSelectRoot_Click(object sender, RoutedEventArgs e)
         {
             using var dialog = new WinForms.FolderBrowserDialog
@@ -524,43 +452,169 @@ namespace MakingVibe
                 rootPath = dialog.SelectedPath;
                 txtCurrentPath.Text = $"Ruta actual: {rootPath}";
                 UpdateStatusBarAndButtonStates($"Cargando directorio: {rootPath}...");
-                _activeFileExtensionsFilter.Clear(); // Reset filters on root change
-                LoadDirectoryTreeUI(rootPath); // Reload UI & Repopulate filters
+                _activeFileExtensionsFilter.Clear();
+                LoadDirectoryTreeUI(rootPath);
                 _settingsService.SaveLastRootPath(rootPath);
-                
-                // Actualizar el estado de los botones de ruta guardada
-                UpdateSavedPathControlsState(); 
-                
+                UpdateSavedPathControlsState();
+                LoadSavedPaths(); // Reload paths to select the newly chosen one if saved
                 UpdateStatusBarAndButtonStates("Listo.");
                 treeViewFiles.Focus();
             }
         }
-        
-        /// <summary>
-        /// Updates the enabled state of the Save Path and Delete Path buttons.
-        /// </summary>
+
         private void UpdateSavedPathControlsState()
         {
             btnSavePath.IsEnabled = !string.IsNullOrEmpty(rootPath) && _fileSystemService.DirectoryExists(rootPath);
             btnDeleteSavedPath.IsEnabled = cmbSavedPaths.SelectedItem != null;
         }
 
+        // --- START: WebView2 Initialization & CSS Injection ---
+        private async Task InitializeWebViewAsync()
+        {
+            try
+            {
+                Debug.WriteLine("Initializing WebView2...");
+                await webViewAiStudio.EnsureCoreWebView2Async(null);
+                Debug.WriteLine("WebView2 Core Initialized.");
+
+                if (webViewAiStudio.CoreWebView2 != null)
+                {
+                    webViewAiStudio.CoreWebView2.NavigationCompleted += CoreWebView2_NavigationCompleted;
+                    Debug.WriteLine("Attached NavigationCompleted event handler.");
+                }
+                 else {
+                    Debug.WriteLine("Error: CoreWebView2 is null after EnsureCoreWebView2Async completed.");
+                    ShowWebViewError("No se pudo inicializar el núcleo de WebView2.");
+                 }
+
+                UpdateStatusBarAndButtonStates("WebView AI Studio listo.");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"WebView2 Initialization Error: {ex}");
+                MessageBox.Show($"Error inicializando el componente WebView2:\n{ex.Message}\n\nAsegúrese de que el Runtime de WebView2 esté instalado en su sistema.\nPuede descargarlo desde el sitio de Microsoft.",
+                    "Error de WebView2", MessageBoxButton.OK, MessageBoxImage.Error);
+                ShowWebViewError($"No se pudo cargar WebView2.\nError: {ex.Message}\nAsegúrese de que el runtime de WebView2 esté instalado.");
+                UpdateStatusBarAndButtonStates("Error al inicializar WebView2.");
+            }
+        }
+
+        private async void CoreWebView2_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+             if (sender is not CoreWebView2 coreWebView) return;
+
+            if (e.IsSuccess)
+            {
+                Debug.WriteLine($"Navigation successful to: {coreWebView.Source}");
+                await Dispatcher.InvokeAsync(async () =>
+                {
+                     await InjectCustomCssAsync(webViewAiStudio);
+                     UpdateStatusBarAndButtonStates("AI Studio cargado y CSS inyectado.");
+                });
+            }
+            else
+            {
+                Debug.WriteLine($"Navigation failed: {e.WebErrorStatus} to {coreWebView.Source}");
+                 await Dispatcher.InvokeAsync(() => {
+                    UpdateStatusBarAndButtonStates($"Error de navegación en AI Studio: {e.WebErrorStatus}");
+                    // ShowWebViewError($"No se pudo cargar la página.\nError: {e.WebErrorStatus}");
+                 });
+            }
+        }
+
+        // --- MODIFIED --- InjectCustomCssAsync to use textContent
+        private async Task InjectCustomCssAsync(WebView2 webView)
+        {
+            if (webView?.CoreWebView2 == null)
+            {
+                Debug.WriteLine("InjectCustomCssAsync: CoreWebView2 not available. Cannot inject CSS.");
+                return;
+            }
+
+            string css = """
+                code {
+                    max-height: 100px !important;
+                    overflow-y: scroll !important;
+                    display: block !important;
+                }
+                """;
+
+            string escapedCss = JsonSerializer.Serialize(css);
+
+            // --- MODIFICATION --- Use textContent instead of innerHTML
+            // This avoids the TrustedHTML violation as textContent is generally safer.
+            string script = $$"""
+                try {
+                    const existingStyle = document.getElementById('makingvibe-custom-code-style');
+                    if (!existingStyle) {
+                        const style = document.createElement('style');
+                        style.id = 'makingvibe-custom-code-style';
+                        style.type = 'text/css';
+                        style.textContent = {{escapedCss}}; // Use textContent here!
+                        document.head.appendChild(style);
+                        console.log('MakingVibe: Custom CSS for <code> injected successfully using textContent.');
+                    } else {
+                         console.log('MakingVibe: Custom CSS for <code> already injected.');
+                    }
+                } catch (error) {
+                    // Log the specific error for easier debugging in browser DevTools
+                    console.error('MakingVibe: Error injecting custom CSS:', error.name, error.message, error.stack);
+                }
+                """;
+
+            try
+            {
+                Debug.WriteLine("Executing CSS injection script (using textContent)...");
+                await webView.ExecuteScriptAsync(script);
+                Debug.WriteLine("CSS injection script executed.");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error executing CSS injection script: {ex.Message}");
+            }
+        }
+
+        private void ShowWebViewError(string message)
+        {
+            Action action = () => {
+                var aiStudioTab = tabControlMain.Items.OfType<TabItem>().FirstOrDefault(ti => ti.Header?.ToString() == "AI Studio");
+                if (aiStudioTab?.Content is Grid grid)
+                {
+                    var webView = grid.Children.OfType<WebView2>().FirstOrDefault();
+                    if (webView != null) webView.Visibility = Visibility.Collapsed;
+
+                    var existingError = grid.Children.OfType<TextBlock>().FirstOrDefault(tb => tb.Name == "WebViewErrorText");
+                    if (existingError != null)
+                    {
+                        grid.Children.Remove(existingError);
+                    }
+
+                    var errorTextBlock = new TextBlock
+                    {
+                        Name = "WebViewErrorText",
+                        Text = message,
+                        Foreground = Brushes.Red,
+                        TextWrapping = TextWrapping.Wrap,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        Margin = new Thickness(20)
+                    };
+                    grid.Children.Add(errorTextBlock);
+                }
+                else {
+                     Debug.WriteLine("ShowWebViewError: Could not find AI Studio TabItem or its Grid content.");
+                }
+            };
+
+             if (Dispatcher.CheckAccess()) { action(); }
+             else { Dispatcher.Invoke(action); }
+        }
+        // --- END: WebView2 Initialization & CSS Injection ---
+
+
         // --- Partial Class Methods (Defined in other files) ---
-        // LoadDirectoryTreeUI(string path) -> MainWindow.TreeView.cs
-        // LoadChildrenUI(...) -> MainWindow.TreeView.cs
-        // UpdateFileFiltersUI(...) -> MainWindow.FiltersTab.cs
-        // AdjustFilterCount(...) -> MainWindow.FiltersTab.cs
-        // ApplyFiltersAndReloadTree() -> MainWindow.FiltersTab.cs
-        // ShowPreviewAsync(FileSystemItem? fsi) -> MainWindow.PreviewTab.cs
-        // AddCurrentFragment() -> MainWindow.PromptTab.cs
-        // LoadFragments() -> MainWindow.PromptTab.cs
-        // SaveFragments() -> MainWindow.PromptTab.cs
-        // RefreshNodeUI(...) -> MainWindow.TreeView.cs
-        // ClearAllSelectionsUI() -> MainWindow.TreeView.cs
-        // SelectDirectoryDescendantsRecursive(...) -> MainWindow.TreeView.cs
-        // UpdateDirectoryFilesSelection(...) -> MainWindow.TreeView.cs
-        // UpdateParentDirectorySelectionState(...) -> MainWindow.TreeView.cs
-        // CollapseOrExpandNodes(...) -> MainWindow.TreeView.cs
+        // [List of partial methods remains the same]
+        // ...
 
     } // End partial class MainWindow
 } // End namespace MakingVibe
